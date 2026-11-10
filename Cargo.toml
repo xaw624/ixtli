@@ -17,6 +17,8 @@ categories = ["multimedia::video"]
 iced = { version = "0.13", default-features = false, features = ["tiny-skia", "tokio", "image"] }
 # Dibuja los iconos SVG de los botones (misma versión que usa iced).
 resvg = { version = "0.42", default-features = false }
+# Dibuja el código QR para vincular el teléfono sin cable.
+qrcode = { version = "0.14", default-features = false }
 ctrlc = { version = "3", features = ["termination"] }
 libc = "0.2"
 

@@ -11,9 +11,13 @@ use std::time::{Duration, Instant};
 
 use crate::audio;
 use crate::config::Options;
-use crate::sys::VirtualCam;
+use crate::sys::{Link, VirtualCam};
 
 const LOG_LINES: usize = 200;
+
+/// Aviso cuando el teléfono deja de responder por la red.
+pub const LOST_WIFI: &str =
+    "Se perdió la conexión WiFi con el teléfono. Revisa que el teléfono y esta computadora sigan en la misma red.";
 
 #[derive(Default)]
 struct Log {
@@ -44,6 +48,7 @@ pub struct Session {
     child: Child,
     log: Arc<Mutex<Log>>,
     cam: VirtualCam,
+    link: Link,
     pub with_mic: bool,
     /// Giro con el que se abrió la cámara.
     pub degrees: u16,
@@ -52,6 +57,7 @@ pub struct Session {
 impl Session {
     pub fn start(
         serial: &str,
+        link: Link,
         cam: &VirtualCam,
         options: &Options,
         degrees: u16,
@@ -111,6 +117,7 @@ impl Session {
             child,
             log,
             cam: cam.clone(),
+            link,
             with_mic: options.mic,
             degrees,
         })
@@ -137,7 +144,7 @@ impl Session {
                     .or(log.last_warning.as_deref())
                     .or(log.lines.back().map(String::as_str))
                     .unwrap_or("scrcpy se cerró sin dar detalles");
-                Some(Err(explain(raw)))
+                Some(Err(explain(raw, self.link)))
             }
             Err(e) => Some(Err(format!("No se pudo vigilar scrcpy: {e}"))),
         }
@@ -172,13 +179,16 @@ fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
 }
 
 /// Traduce los errores más comunes de scrcpy a algo que se pueda resolver.
-fn explain(raw: &str) -> String {
+fn explain(raw: &str, link: Link) -> String {
     let lower = raw.to_lowercase();
     let known = if lower.contains("not supported before android 12") {
         "Tu teléfono necesita Android 12 o más nuevo para compartir la cámara."
     } else if lower.contains("device disconnected") || lower.contains("could not find any adb device")
     {
-        "Se perdió la conexión con el teléfono. Revisa el cable USB."
+        match link {
+            Link::Usb => "Se perdió la conexión con el teléfono. Revisa el cable USB.",
+            Link::Wifi => LOST_WIFI,
+        }
     } else if lower.contains("unauthorized") {
         "Falta aceptar el aviso de depuración USB en el teléfono."
     } else if lower.contains("v4l2") || lower.contains("failed to open output") {
@@ -218,9 +228,10 @@ mod tests {
 
     #[test]
     fn explains_known_errors() {
-        assert!(explain("WARN: Device disconnected").contains("cable USB"));
-        assert!(explain("ERROR: Camera mirroring is not supported before Android 12")
+        assert!(explain("WARN: Device disconnected", Link::Usb).contains("cable USB"));
+        assert!(explain("WARN: Device disconnected", Link::Wifi).contains("WiFi"));
+        assert!(explain("ERROR: Camera mirroring is not supported before Android 12", Link::Usb)
             .contains("Android 12"));
-        assert!(explain("ERROR: algo raro").contains("algo raro"));
+        assert!(explain("ERROR: algo raro", Link::Usb).contains("algo raro"));
     }
 }

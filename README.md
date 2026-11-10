@@ -16,7 +16,7 @@ cualquier otro programa.
   a un ángulo personalizado y con efecto espejo.
 - Vista previa dentro de la ventana, que se puede desacoplar a una ventana aparte.
 - Micrófono del teléfono como micrófono virtual.
-- Conexión por cable USB.
+- Conexión por cable USB o por WiFi, incluso sin cable desde el principio (vinculando con un código QR).
 - Ventana sencilla o uso desde la terminal.
 
 ![Ventana de Ixtli](docs/captura.png)
@@ -82,6 +82,44 @@ soltar el control.
 Cada vez que cambia el giro, la cámara se reabre y la imagen se corta un par de
 segundos.
 
+### Sin cable (WiFi)
+
+El teléfono y la computadora deben estar en la **misma red WiFi**. Hay dos formas:
+
+**Con código QR (sin cable nunca):**
+
+1. En la ventana, junto a **WiFi**, presiona **Vincular con QR**.
+2. En el teléfono abre **Opciones de desarrollador → Depuración inalámbrica**, actívala y
+   toca **Vincular dispositivo con código QR**.
+3. Escanea el código que muestra Ixtli **con el lector que abre esa pantalla**, no con
+   la app de cámara (la cámara lo confunde con una red WiFi). En unos segundos queda
+   conectado.
+
+**Con el código de 6 dígitos** (si no puedes escanear el QR, o por VPN): en la misma
+tarjeta de Ixtli hay un formulario. En el teléfono toca **Vincular dispositivo con
+código de vinculación** y escribe en Ixtli la dirección (`IP:puerto`) y el código que
+muestra. Si después Ixtli no encuentra el teléfono en la red, te pide la **Dirección IP
+y puerto** de la pantalla de Depuración inalámbrica y la recuerda. Por VPN, el teléfono
+también debe estar dentro de la VPN y se escribe su IP de la VPN.
+
+Después Ixtli encuentra el teléfono solo, aunque cambie su IP, mientras la depuración
+inalámbrica esté encendida. Algunos teléfonos la apagan al reiniciarse o al cambiar de
+red: vuelve a activarla en Ajustes (no hace falta vincular otra vez).
+
+**Con el cable una vez:**
+
+1. Conecta el teléfono por USB.
+2. En la ventana, junto a **WiFi**, presiona **Conectar por WiFi**.
+3. Cuando diga «Ya puedes desconectar el cable», desconéctalo y presiona **Encender**.
+
+Ixtli recuerda el teléfono y la siguiente vez se conecta solo, sin cable. Si la cámara
+está encendida por cable y lo desconectas, sigue por WiFi tras un corte de un par de
+segundos. Si se cae la red, Ixtli apaga la cámara y te avisa.
+
+Con este método, al **reiniciar el teléfono** se apaga su conexión por WiFi: conéctalo por
+USB una vez y vuelve a presionar **Conectar por WiFi** (o vincúlalo con QR). Para dejar
+de usarlo sin cable, presiona **Olvidar**.
+
 ### Vista previa
 
 Con la cámara encendida, la imagen aparece dentro de la ventana. **Desacoplar** la pasa
@@ -99,12 +137,17 @@ ixtli encender --giro=90           # imagen girada 90°
 ixtli encender --espejo --angulo=15  # efecto espejo y 15° extra
 ixtli encender --sin-micro         # solo la cámara
 ixtli vista                        # ventana con la imagen de la cámara
+ixtli wifi                         # pasa a WiFi el teléfono conectado por USB
+ixtli wifi olvidar                 # deja de usar el teléfono sin cable
+ixtli vincular                     # vincula sin cable con un código QR en la terminal
+ixtli vincular 192.168.1.50:41875 123456   # vincula con el código de 6 dígitos
 ixtli --help
 ```
 
 ## Cómo funciona
 
-1. `scrcpy` captura la cámara del teléfono por USB y la envía a una cámara virtual
+1. `scrcpy` captura la cámara del teléfono por USB o por WiFi (con la depuración
+   inalámbrica de Android o con `adb tcpip`) y la envía a una cámara virtual
    creada con `v4l2loopback`.
 2. El audio del micrófono del teléfono se envía a una salida de audio interna que no
    suena en las bocinas.
@@ -115,7 +158,8 @@ Al apagar o cerrar Ixtli se cierra `scrcpy` y se quita el micrófono virtual.
 
 ## Limitaciones
 
-- Solo Linux y solo por cable USB.
+- Solo Linux.
+- Por WiFi la imagen depende de la red: si se traba, usa 720p o el cable.
 - La cámara virtual se pierde al reiniciar la computadora; Ixtli la vuelve a activar
   cuando hace falta.
 - En algunos navegadores hay que recargar la página de la videollamada para que

@@ -7,9 +7,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::audio;
-use crate::config::{Options, Rotation};
-use crate::session::Session;
-use crate::sys::{self, Deps, Phone, VirtualCam};
+use crate::config::{self, Options, Remembered, Rotation};
+use crate::pairing::{self, Pairing, Progress};
+use crate::session::{Session, LOST_WIFI};
+use crate::sys::{self, DeviceState, Deps, Link, Phone, VirtualCam};
+
+/// Cada cuánto se intenta reconectar sin cable el teléfono recordado.
+const RECONNECT_EVERY: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -32,6 +36,31 @@ pub struct Snapshot {
     pub mic: bool,
     /// Último problema, ya explicado para el usuario.
     pub error: Option<String>,
+    pub wifi: WifiStatus,
+}
+
+/// La conexión sin cable.
+#[derive(Clone, Debug, Default)]
+pub struct WifiStatus {
+    /// El teléfono que se conectó por WiFi alguna vez.
+    pub remembered: Option<Remembered>,
+    /// Ese teléfono está conectado por la red ahora mismo.
+    pub connected: bool,
+    /// Se está pasando el teléfono a WiFi.
+    pub busy: bool,
+    /// Por qué no se pudo conectar la última vez.
+    pub problem: Option<String>,
+    /// Vinculación con código QR en curso.
+    pub pairing: Option<PairingView>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PairingView {
+    /// Texto del código QR; `None` si se vincula con el código de 6 dígitos.
+    pub qr: Option<String>,
+    pub progress: Progress,
+    /// Dirección de un teléfono que espera código, visto en la red.
+    pub suggestion: Option<String>,
 }
 
 enum Order {
@@ -39,6 +68,12 @@ enum Order {
     Stop,
     LoadModule,
     RestartAdb,
+    WifiConnect,
+    WifiForget,
+    PairStart,
+    PairCode(String, String),
+    PairAddress(String),
+    PairCancel,
     Quit,
 }
 
@@ -52,7 +87,9 @@ pub struct Engine {
 impl Engine {
     pub fn spawn() -> Engine {
         let (orders, inbox) = mpsc::channel();
-        let shared = Arc::new(Mutex::new(Snapshot::default()));
+        let mut first = Snapshot::default();
+        first.wifi.remembered = config::load_phone();
+        let shared = Arc::new(Mutex::new(first));
         let worker = {
             let shared = shared.clone();
             thread::spawn(move || work(inbox, shared))
@@ -91,6 +128,41 @@ impl Engine {
         let _ = self.orders.send(Order::RestartAdb);
     }
 
+    /// Pasa a WiFi el teléfono conectado por USB y lo recuerda.
+    pub fn wifi_connect(&self) {
+        {
+            let mut state = self.shared.lock().unwrap();
+            state.wifi.busy = true;
+            state.wifi.problem = None;
+        }
+        let _ = self.orders.send(Order::WifiConnect);
+    }
+
+    /// Olvida el teléfono recordado y lo desconecta de la red.
+    pub fn wifi_forget(&self) {
+        let _ = self.orders.send(Order::WifiForget);
+    }
+
+    /// Empieza a vincular un teléfono con código QR (o genera otro código).
+    pub fn pair_start(&self) {
+        let _ = self.orders.send(Order::PairStart);
+    }
+
+    /// Vincula con la dirección y el código de 6 dígitos que muestra el teléfono.
+    pub fn pair_code(&self, addr: String, code: String) {
+        let _ = self.orders.send(Order::PairCode(addr, code));
+    }
+
+    /// Conecta el teléfono ya vinculado por su «Dirección IP y puerto».
+    pub fn pair_address(&self, addr: String) {
+        let _ = self.orders.send(Order::PairAddress(addr));
+    }
+
+    pub fn pair_cancel(&self) {
+        self.shared.lock().unwrap().wifi.pairing = None;
+        let _ = self.orders.send(Order::PairCancel);
+    }
+
     /// Apaga todo y espera a que el hilo termine de limpiar.
     pub fn shutdown(&self) {
         let _ = self.orders.send(Order::Quit);
@@ -107,6 +179,9 @@ fn update(shared: &Mutex<Snapshot>, change: impl FnOnce(&mut Snapshot)) {
 fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     let mut session: Option<Running> = None;
     let mut deps_checked: Option<Instant> = None;
+    let mut remembered = shared.lock().unwrap().wifi.remembered.clone();
+    let mut last_reconnect: Option<Instant> = None;
+    let mut pairing: Option<Pairing> = None;
 
     loop {
         // --- Revisar el sistema -------------------------------------------
@@ -122,11 +197,53 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             // Con la cámara encendida solo se vigila a scrcpy.
             Some(running) => match running.session.finished() {
                 Some(outcome) => {
+                    let (options, link, with_mic) =
+                        (running.options, running.link, running.session.with_mic);
+                    end(&mut session, true);
+                    // Si se desconectó el cable pero el teléfono sigue por
+                    // WiFi, la cámara continúa sin cable.
+                    let wifi = remembered
+                        .as_ref()
+                        .filter(|_| outcome.is_err() && link == Link::Usb)
+                        .and_then(|phone| {
+                            pairing::matching(phone, &sys::devices())
+                                .into_iter()
+                                .find(|device| device.state == DeviceState::Ready)
+                        });
+                    let reopened = match wifi {
+                        Some(device) => Some(open(&options, &device.serial, Link::Wifi, with_mic)),
+                        None => {
+                            if with_mic {
+                                audio::remove();
+                            }
+                            None
+                        }
+                    };
+                    match reopened {
+                        Some(Ok(running)) => {
+                            session = Some(running);
+                            update(&shared, |state| state.phase = Phase::Starting);
+                        }
+                        Some(Err(problem)) => update(&shared, |state| {
+                            state.phase = Phase::Off;
+                            state.mic = false;
+                            state.error = Some(problem);
+                        }),
+                        None => update(&shared, |state| {
+                            state.phase = Phase::Off;
+                            state.mic = false;
+                            state.error = outcome.err();
+                        }),
+                    }
+                }
+                // Por WiFi la red se puede caer sin que scrcpy se entere.
+                None if running.lost() => {
                     end(&mut session, false);
                     update(&shared, |state| {
                         state.phase = Phase::Off;
                         state.mic = false;
-                        state.error = outcome.err();
+                        state.wifi.connected = false;
+                        state.error = Some(LOST_WIFI.to_string());
                     });
                 }
                 None if running.session.is_live() => {
@@ -134,9 +251,10 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     // Giro automático: si el teléfono cambió de posición, se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
                     if running.turned() {
-                        let (options, serial) = (running.options, running.serial.clone());
+                        let (options, serial, link) =
+                            (running.options, running.serial.clone(), running.link);
                         end(&mut session, true);
-                        match open(&options, &serial, true) {
+                        match open(&options, &serial, link, true) {
                             Ok(reopened) => {
                                 session = Some(reopened);
                                 update(&shared, |state| state.phase = Phase::Starting);
@@ -153,12 +271,39 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             },
             None => {
                 let has_adb = shared.lock().unwrap().deps.adb;
-                let phone = if has_adb { sys::phone() } else { Phone::Missing };
-                let cam = sys::virtual_cam();
-                update(&shared, |state| {
-                    state.phone = phone;
-                    state.cam = cam;
-                });
+                look_for_phone(&shared, has_adb, remembered.as_ref());
+                update(&shared, |state| state.checked = true);
+                if let Some(job) = &mut pairing {
+                    let progress = job.step();
+                    let suggestion = job.suggestion();
+                    match &progress {
+                        Progress::Done(phone) => {
+                            if let Some(old) = remembered.as_ref().filter(|old| old.addr != phone.addr) {
+                                pairing::disconnect(old);
+                            }
+                            remember(&shared, &mut remembered, phone.clone());
+                            pairing = None;
+                            look_for_phone(&shared, has_adb, remembered.as_ref());
+                        }
+                        Progress::Failed(_) => pairing = None,
+                        Progress::Waiting | Progress::Connecting | Progress::NeedAddress(_) => {}
+                    }
+                    update(&shared, |state| {
+                        if let Some(view) = &mut state.wifi.pairing {
+                            view.progress = progress;
+                            view.suggestion = suggestion;
+                        }
+                    });
+                }
+                // Sin teléfono listo, se busca sin cable el que se recuerda.
+                let missing = !matches!(shared.lock().unwrap().phone, Phone::Ready { .. });
+                let due = last_reconnect.is_none_or(|at| at.elapsed() >= RECONNECT_EVERY);
+                if let (true, true, true, Some(phone)) = (has_adb, missing, due, &remembered) {
+                    last_reconnect = Some(Instant::now());
+                    let result = pairing::reconnect(phone);
+                    update(&shared, |state| state.wifi.problem = result.err());
+                    look_for_phone(&shared, has_adb, remembered.as_ref());
+                }
             }
         }
         update(&shared, |state| state.checked = true);
@@ -166,6 +311,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
         // --- Esperar la siguiente orden -----------------------------------
         let phase = shared.lock().unwrap().phase;
         let pause = match (&session, phase) {
+            (None, _) if pairing.is_some() => Duration::from_millis(800),
             (Some(_), Phase::Live) => Duration::from_millis(1000),
             (Some(_), _) => Duration::from_millis(200),
             (None, _) => Duration::from_millis(1500),
@@ -176,7 +322,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 // videollamada no lo pierda al cambiar una opción.
                 let keep_mic = options.mic && session.as_ref().is_some_and(|s| s.session.with_mic);
                 end(&mut session, keep_mic);
-                match begin(&options, keep_mic) {
+                match begin(&options, keep_mic, remembered.as_ref()) {
                     Ok(started) => {
                         session = Some(started);
                         update(&shared, |state| {
@@ -209,6 +355,91 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 update(&shared, |state| state.error = result.err());
             }
             Ok(Order::RestartAdb) => sys::restart_adb(),
+            Ok(Order::WifiConnect) => {
+                let result = if session.is_some() {
+                    Err("Apaga la cámara antes de pasar a WiFi.".to_string())
+                } else {
+                    match sys::phone() {
+                        Phone::Ready { serial, model, link: Link::Usb } => {
+                            sys::wifi_enable(&serial)
+                                .map(|addr| Remembered { addr, model, paired: false, last: None })
+                        }
+                        Phone::Ready { link: Link::Wifi, .. } => {
+                            Err("El teléfono ya está conectado por WiFi.".to_string())
+                        }
+                        _ => Err("Conecta el teléfono por USB para pasarlo a WiFi.".to_string()),
+                    }
+                };
+                match result {
+                    Ok(phone) => {
+                        // Si cambió de IP, se suelta la dirección vieja.
+                        if let Some(old) = remembered.as_ref().filter(|old| old.addr != phone.addr) {
+                            pairing::disconnect(old);
+                        }
+                        remember(&shared, &mut remembered, phone);
+                    }
+                    Err(problem) => update(&shared, |state| {
+                        state.wifi.busy = false;
+                        state.wifi.problem = Some(problem);
+                    }),
+                }
+                let has_adb = shared.lock().unwrap().deps.adb;
+                if session.is_none() {
+                    look_for_phone(&shared, has_adb, remembered.as_ref());
+                }
+            }
+            Ok(Order::WifiForget) => {
+                if let Some(phone) = remembered.take() {
+                    if session.as_ref().is_some_and(|running| running.link == Link::Wifi) {
+                        end(&mut session, false);
+                        update(&shared, |state| {
+                            state.phase = Phase::Off;
+                            state.mic = false;
+                        });
+                    }
+                    pairing::disconnect(&phone);
+                }
+                config::save_phone(None);
+                update(&shared, |state| state.wifi = WifiStatus::default());
+            }
+            Ok(Order::PairStart) => {
+                let job = Pairing::new();
+                let view = PairingView {
+                    qr: Some(job.qr_text()),
+                    progress: Progress::Waiting,
+                    suggestion: None,
+                };
+                pairing = Some(job);
+                update(&shared, |state| {
+                    state.wifi.pairing = Some(view);
+                    state.wifi.problem = None;
+                });
+            }
+            Ok(Order::PairCode(addr, code)) => {
+                match &mut pairing {
+                    Some(job) => job.use_code(addr, code),
+                    None => pairing = Some(Pairing::with_code(addr, code)),
+                }
+                update(&shared, |state| {
+                    state.wifi.pairing = Some(PairingView {
+                        qr: None,
+                        progress: Progress::Connecting,
+                        suggestion: None,
+                    });
+                    state.wifi.problem = None;
+                });
+            }
+            Ok(Order::PairAddress(addr)) => {
+                if let Some(job) = &mut pairing {
+                    job.set_connect_addr(addr);
+                    update(&shared, |state| {
+                        if let Some(view) = &mut state.wifi.pairing {
+                            view.progress = Progress::Connecting;
+                        }
+                    });
+                }
+            }
+            Ok(Order::PairCancel) => pairing = None,
             Ok(Order::Quit) | Err(RecvTimeoutError::Disconnected) => {
                 end(&mut session, false);
                 break;
@@ -218,15 +449,65 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     }
 }
 
+/// Guarda el teléfono que se acaba de conectar sin cable.
+fn remember(shared: &Mutex<Snapshot>, remembered: &mut Option<Remembered>, phone: Remembered) {
+    config::save_phone(Some(&phone));
+    *remembered = Some(phone.clone());
+    update(shared, |state| {
+        let pairing = state.wifi.pairing.take();
+        state.wifi = WifiStatus {
+            remembered: Some(phone),
+            connected: true,
+            busy: false,
+            problem: None,
+            pairing,
+        }
+    });
+}
+
+/// Revisa qué teléfono hay y si el recordado está conectado por WiFi.
+fn look_for_phone(shared: &Mutex<Snapshot>, has_adb: bool, remembered: Option<&Remembered>) {
+    let devices = if has_adb { sys::devices() } else { Vec::new() };
+    let phone = sys::pick(&devices);
+    let connected = remembered.is_some_and(|wanted| {
+        pairing::matching(wanted, &devices)
+            .iter()
+            .any(|device| device.state == DeviceState::Ready)
+    });
+    let cam = sys::virtual_cam();
+    update(shared, |state| {
+        state.phone = phone;
+        state.cam = cam;
+        state.wifi.connected = connected;
+        if connected {
+            state.wifi.problem = None;
+        }
+    });
+}
+
 /// Una sesión abierta, con lo necesario para reabrirla si hay que girarla.
 struct Running {
     session: Session,
     options: Options,
     serial: String,
+    link: Link,
     last_turn_check: Instant,
+    last_ping: Instant,
+    missed_pings: u8,
 }
 
 impl Running {
+    /// Por WiFi: el teléfono dejó de responder. Pregunta cada 3 segundos y
+    /// lo da por perdido después de dos intentos sin respuesta.
+    fn lost(&mut self) -> bool {
+        if self.link != Link::Wifi || self.last_ping.elapsed() < Duration::from_secs(3) {
+            return false;
+        }
+        self.missed_pings = if sys::reachable(&self.serial) { 0 } else { self.missed_pings + 1 };
+        self.last_ping = Instant::now();
+        self.missed_pings >= 2
+    }
+
     /// Con giro automático: el teléfono ya no está en la posición con la que
     /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos.
     fn turned(&mut self) -> bool {
@@ -245,19 +526,30 @@ impl Running {
 }
 
 /// Deja todo listo y abre scrcpy. Cada paso que falla explica qué hacer.
-fn begin(options: &Options, mic_ready: bool) -> Result<Running, String> {
+fn begin(options: &Options, mic_ready: bool, remembered: Option<&Remembered>) -> Result<Running, String> {
     let checked = (|| {
         let deps = Deps::check();
         if let Some(problem) = deps.problem(options.mic) {
             return Err(problem);
         }
-        match sys::phone() {
-            Phone::Ready { serial, .. } => Ok(serial),
+        let mut phone = sys::phone();
+        // Sin cable, se intenta con el teléfono recordado.
+        if let (false, Some(wanted)) = (matches!(phone, Phone::Ready { .. }), remembered) {
+            match pairing::reconnect(wanted) {
+                Ok(()) => phone = sys::phone(),
+                Err(problem) if phone == Phone::Missing => {
+                    return Err(format!("No encontré el teléfono por USB ni por WiFi. {problem}"))
+                }
+                Err(_) => {}
+            }
+        }
+        match phone {
+            Phone::Ready { serial, link, .. } => Ok((serial, link)),
             other => Err(other.advice().to_string()),
         }
     })();
     match checked {
-        Ok(serial) => open(options, &serial, mic_ready),
+        Ok((serial, link)) => open(options, &serial, link, mic_ready),
         Err(problem) => {
             if mic_ready {
                 audio::remove();
@@ -268,7 +560,7 @@ fn begin(options: &Options, mic_ready: bool) -> Result<Running, String> {
 }
 
 /// Abre scrcpy hacia la cámara virtual. Si falla, no deja el micrófono puesto.
-fn open(options: &Options, serial: &str, mic_ready: bool) -> Result<Running, String> {
+fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<Running, String> {
     let opened = (|| {
         let cam = match sys::virtual_cam() {
             Some(cam) => cam,
@@ -288,14 +580,17 @@ fn open(options: &Options, serial: &str, mic_ready: bool) -> Result<Running, Str
             Rotation::Fixed(_) => None,
         };
         let degrees = options.rotation.degrees(options.facing, quarters);
-        Session::start(serial, &cam, options, degrees)
+        Session::start(serial, link, &cam, options, degrees)
     })();
     match opened {
         Ok(session) => Ok(Running {
             session,
             options: *options,
             serial: serial.to_string(),
+            link,
             last_turn_check: Instant::now(),
+            last_ping: Instant::now(),
+            missed_pings: 0,
         }),
         Err(problem) => {
             if options.mic {

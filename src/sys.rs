@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Etiqueta que Ixtli le pone a la cámara virtual cuando la crea.
 pub const CAM_LABEL: &str = "Ixtli";
@@ -27,6 +27,8 @@ pub fn which(bin: &str) -> Option<PathBuf> {
 pub struct Failure {
     pub code: Option<i32>,
     pub message: String,
+    /// El programa no terminó a tiempo y se cerró a la fuerza.
+    pub timed_out: bool,
 }
 
 /// Ejecuta un programa y devuelve su salida estándar.
@@ -37,10 +39,52 @@ pub fn run(bin: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Result<String, Fa
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| Failure {
-            code: None,
-            message: format!("{}: {e}", bin.to_string_lossy()),
-        })?;
+        .map_err(|e| launch_failure(bin, e))?;
+    finish(output)
+}
+
+/// Como [`run`], pero si el programa tarda más de `limit` lo cierra. Sirve
+/// para adb: con la red caída, sus comandos se pueden quedar esperando.
+pub fn run_for(bin: impl AsRef<std::ffi::OsStr>, args: &[&str], limit: Duration) -> Result<String, Failure> {
+    let bin = bin.as_ref();
+    let mut child = Command::new(bin)
+        .args(args)
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| launch_failure(bin, e))?;
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Failure {
+                    code: None,
+                    message: format!("{} no respondió a tiempo", bin.to_string_lossy()),
+                    timed_out: true,
+                });
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(e) => return Err(launch_failure(bin, e)),
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| launch_failure(bin, e))?;
+    finish(output)
+}
+
+fn launch_failure(bin: &std::ffi::OsStr, error: std::io::Error) -> Failure {
+    Failure {
+        code: None,
+        message: format!("{}: {error}", bin.to_string_lossy()),
+        timed_out: false,
+    }
+}
+
+fn finish(output: std::process::Output) -> Result<String, Failure> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     if output.status.success() {
         return Ok(stdout);
@@ -56,6 +100,7 @@ pub fn run(bin: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Result<String, Fa
     Err(Failure {
         code: output.status.code(),
         message,
+        timed_out: false,
     })
 }
 
@@ -179,6 +224,14 @@ fn module_installed() -> bool {
 // Teléfono
 // ---------------------------------------------------------------------------
 
+/// Por dónde está conectado el teléfono.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Link {
+    #[default]
+    Usb,
+    Wifi,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Phone {
     /// No hay ningún teléfono con depuración USB conectado.
@@ -192,6 +245,7 @@ pub enum Phone {
     Ready {
         serial: String,
         model: String,
+        link: Link,
     },
 }
 
@@ -212,41 +266,94 @@ impl Phone {
     }
 }
 
-pub fn phone() -> Phone {
-    match run("adb", &["devices", "-l"]) {
-        Ok(output) => parse_devices(&output),
-        Err(_) => Phone::Missing,
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceState {
+    Ready,
+    Unauthorized,
+    NoPermission,
+    Offline,
+    Other,
 }
 
-/// Interpreta la salida de `adb devices -l`. Devuelve el primer teléfono
-/// listo; si no hay ninguno, el problema del que sí esté conectado.
-fn parse_devices(output: &str) -> Phone {
-    let mut found = Phone::Missing;
-    let devices = output
+/// Un renglón de `adb devices -l`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Device {
+    pub serial: String,
+    pub state: DeviceState,
+    pub model: String,
+    pub link: Link,
+}
+
+/// Los dispositivos que ve adb. Vacío si adb no responde.
+pub fn devices() -> Vec<Device> {
+    run_for("adb", &["devices", "-l"], Duration::from_secs(5))
+        .map(|output| parse_devices(&output))
+        .unwrap_or_default()
+}
+
+pub fn phone() -> Phone {
+    pick(&devices())
+}
+
+/// Interpreta la salida de `adb devices -l`.
+fn parse_devices(output: &str) -> Vec<Device> {
+    output
         .lines()
         .skip_while(|line| !line.starts_with("List of devices"))
-        .skip(1);
-    for line in devices {
-        let mut fields = line.split_whitespace();
-        let (Some(serial), Some(state)) = (fields.next(), fields.next()) else {
-            continue;
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let serial = fields.next()?.to_string();
+            let state = match fields.next()? {
+                "device" => DeviceState::Ready,
+                "unauthorized" => DeviceState::Unauthorized,
+                // "no permissions (...)" se parte en "no" y lo demás.
+                "no" => DeviceState::NoPermission,
+                "offline" | "authorizing" | "connecting" => DeviceState::Offline,
+                _ => DeviceState::Other,
+            };
+            let rest: Vec<&str> = fields.collect();
+            let model = rest
+                .iter()
+                .find_map(|field| field.strip_prefix("model:"))
+                .unwrap_or("Android")
+                .replace('_', "-");
+            // Los conectados por cable dicen en qué puerto USB están.
+            let link = if rest.iter().any(|field| field.starts_with("usb:")) {
+                Link::Usb
+            } else {
+                Link::Wifi
+            };
+            Some(Device { serial, state, model, link })
+        })
+        .collect()
+}
+
+/// Elige el teléfono que se va a usar. Si el mismo teléfono aparece por USB y
+/// por WiFi se prefiere el cable, que es más rápido y estable. Si no hay
+/// ninguno listo, devuelve el problema del que sí esté conectado.
+///
+/// Un teléfono por WiFi que no responde no cuenta como problema: adb lo
+/// sigue intentando y Ixtli lo reconecta solo.
+pub fn pick(devices: &[Device]) -> Phone {
+    let ready = |link| {
+        devices
+            .iter()
+            .find(|device| device.state == DeviceState::Ready && device.link == link)
+    };
+    if let Some(device) = ready(Link::Usb).or_else(|| ready(Link::Wifi)) {
+        return Phone::Ready {
+            serial: device.serial.clone(),
+            model: device.model.clone(),
+            link: device.link,
         };
-        match state {
-            "device" => {
-                let model = fields
-                    .find_map(|field| field.strip_prefix("model:"))
-                    .unwrap_or("Android")
-                    .replace('_', "-");
-                return Phone::Ready {
-                    serial: serial.to_string(),
-                    model,
-                };
-            }
-            "unauthorized" => found = Phone::Unauthorized,
-            // "no permissions (...)" se parte en "no" y lo demás.
-            "no" if found == Phone::Missing => found = Phone::NoPermission,
-            "offline" | "authorizing" | "connecting" if found == Phone::Missing => {
+    }
+    let mut found = Phone::Missing;
+    for device in devices {
+        match device.state {
+            DeviceState::Unauthorized => found = Phone::Unauthorized,
+            DeviceState::NoPermission if found == Phone::Missing => found = Phone::NoPermission,
+            DeviceState::Offline if found == Phone::Missing && device.link == Link::Usb => {
                 found = Phone::Offline
             }
             _ => {}
@@ -255,14 +362,245 @@ fn parse_devices(output: &str) -> Phone {
     found
 }
 
+// ---------------------------------------------------------------------------
+// Conexión por WiFi
+// ---------------------------------------------------------------------------
+
+/// Puerto en el que el teléfono escucha a adb por la red.
+const WIFI_PORT: u16 = 5555;
+
+/// Pasa a WiFi un teléfono conectado por USB: lee su IP, le pide a adb que
+/// escuche por la red y se conecta. Devuelve la dirección (`IP:puerto`).
+pub fn wifi_enable(serial: &str) -> Result<String, String> {
+    let addresses = run_for(
+        "adb",
+        &["-s", serial, "shell", "ip -o -f inet addr show"],
+        Duration::from_secs(5),
+    )
+    .map_err(|failure| format!("No pude leer la red del teléfono: {}", failure.message))?;
+    let ip = parse_wifi_ip(&addresses)
+        .ok_or("El teléfono no está conectado a una red WiFi. Conéctalo a la misma red que esta computadora.")?;
+    let port = WIFI_PORT.to_string();
+    run_for("adb", &["-s", serial, "tcpip", &port], Duration::from_secs(10))
+        .map_err(|failure| format!("El teléfono no aceptó la conexión por WiFi: {}", failure.message))?;
+    let addr = format!("{ip}:{WIFI_PORT}");
+    // adb se reinicia en el teléfono para escuchar por la red: tarda un poco.
+    let mut last = String::new();
+    for _ in 0..5 {
+        thread::sleep(Duration::from_millis(800));
+        match wifi_connect(&addr) {
+            Ok(()) => return Ok(addr),
+            Err(problem) => last = problem,
+        }
+    }
+    Err(last)
+}
+
+/// Se conecta a un teléfono que ya estuvo por WiFi.
+pub fn wifi_connect(addr: &str) -> Result<(), String> {
+    // Si adb lo tiene como "sin respuesta", hay que soltarlo para reintentar.
+    if devices()
+        .iter()
+        .any(|device| device.serial == addr && device.state != DeviceState::Ready)
+    {
+        wifi_disconnect(addr);
+    }
+    let reply = run_for("adb", &["connect", addr], Duration::from_secs(5)).map_err(|failure| {
+        if failure.timed_out {
+            explain_connect("timed out")
+        } else {
+            explain_connect(&failure.message)
+        }
+    })?;
+    let lower = reply.to_lowercase();
+    if !lower.contains("connected to") || lower.contains("failed") || lower.contains("cannot") {
+        return Err(explain_connect(&reply));
+    }
+    // Ya conectado: espera a que adb lo marque como listo.
+    for _ in 0..10 {
+        match devices().iter().find(|device| device.serial == addr).map(|device| device.state) {
+            Some(DeviceState::Ready) => return Ok(()),
+            Some(DeviceState::Unauthorized) => {
+                return Err("Desbloquea el teléfono y acepta el aviso de depuración.".into())
+            }
+            _ => thread::sleep(Duration::from_millis(200)),
+        }
+    }
+    Err(explain_connect("timed out"))
+}
+
+pub fn wifi_disconnect(addr: &str) {
+    let _ = run_for("adb", &["disconnect", addr], Duration::from_secs(3));
+}
+
+/// El teléfono sigue respondiendo (sirve para notar que se cayó la red).
+pub fn reachable(serial: &str) -> bool {
+    run_for("adb", &["-s", serial, "shell", "echo", "ok"], Duration::from_secs(3))
+        .is_ok_and(|output| output.trim() == "ok")
+}
+
+/// De `ip -o -f inet addr show` saca la IP de la red WiFi. Prefiere `wlan*`;
+/// si el teléfono comparte su propia red (zona WiFi), usa esa.
+fn parse_wifi_ip(output: &str) -> Option<String> {
+    let mut found: Vec<(u8, String)> = output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let interface = fields.nth(1)?;
+            fields.find(|field| *field == "inet")?;
+            let ip = fields.next()?.split('/').next()?.to_string();
+            let rank = if interface.starts_with("wlan") {
+                0
+            } else if interface.contains("wlan") || interface.starts_with("ap") {
+                1
+            } else {
+                return None;
+            };
+            Some((rank, ip))
+        })
+        .collect();
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().next().map(|(_, ip)| ip)
+}
+
+// ---------------------------------------------------------------------------
+// Depuración inalámbrica (Android 11 o más nuevo)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MdnsKind {
+    /// El teléfono está esperando que lo vinculen.
+    Pairing,
+    /// Un teléfono con la depuración inalámbrica encendida.
+    Connect,
+    Other,
+}
+
+/// Un servicio que adb encontró en la red.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MdnsService {
+    pub name: String,
+    pub kind: MdnsKind,
+    /// `IP:puerto`.
+    pub addr: String,
+}
+
+/// Lo que los teléfonos anuncian en la red (mDNS), según adb.
+pub fn mdns_services() -> Vec<MdnsService> {
+    run_for("adb", &["mdns", "services"], Duration::from_secs(4))
+        .map(|output| parse_mdns(&output))
+        .unwrap_or_default()
+}
+
+/// Interpreta `adb mdns services`: «nombre  tipo  IP:puerto» por renglón.
+fn parse_mdns(output: &str) -> Vec<MdnsService> {
+    let mut services: Vec<MdnsService> = output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let [name, kind, addr] = fields[..] else { return None };
+            let (ip, port) = addr.rsplit_once(':')?;
+            port.parse::<u16>().ok()?;
+            ip.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok()?;
+            let kind = if kind.contains("_adb-tls-pairing") {
+                MdnsKind::Pairing
+            } else if kind.contains("_adb-tls-connect") {
+                MdnsKind::Connect
+            } else {
+                MdnsKind::Other
+            };
+            Some(MdnsService { name: name.to_string(), kind, addr: addr.to_string() })
+        })
+        .collect();
+    // Las direcciones IPv4 primero: son las que adb maneja sin problema.
+    services.sort_by_key(|service| service.addr.matches(':').count() > 1);
+    services
+}
+
+/// Vincula el teléfono con la contraseña del código QR. Devuelve el nombre
+/// con el que el teléfono se anuncia en la red de ahí en adelante.
+pub fn pair(addr: &str, password: &str) -> Result<String, String> {
+    let reply = run_for("adb", &["pair", addr, password], Duration::from_secs(20)).map_err(|failure| {
+        if failure.timed_out {
+            "El teléfono no terminó de vincularse. Intenta otra vez.".to_string()
+        } else {
+            explain_pair(&failure.message)
+        }
+    })?;
+    parse_pair(&reply).ok_or_else(|| explain_pair(&reply))
+}
+
+/// De «Successfully paired to 192.168.1.5:37123 [guid=adb-ZY32-AbCd]» saca el guid.
+fn parse_pair(output: &str) -> Option<String> {
+    let line = output.lines().find(|line| line.contains("Successfully paired"))?;
+    let guid = line.split("guid=").nth(1)?.trim_end_matches(|c: char| c == ']' || c.is_whitespace());
+    Some(guid.to_string()).filter(|guid| !guid.is_empty())
+}
+
+fn explain_pair(raw: &str) -> String {
+    if raw.to_lowercase().contains("password") {
+        "El teléfono rechazó el código. Genera otro e intenta de nuevo.".into()
+    } else {
+        format!("No se pudo vincular el teléfono: {}", raw.trim())
+    }
+}
+
+/// Texto al azar para el código QR (sin letras que se confundan).
+pub fn random_text(length: usize) -> String {
+    const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    let mut bytes = vec![0u8; length];
+    let filled = fs::File::open("/dev/urandom")
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes))
+        .is_ok();
+    if !filled {
+        // Sin /dev/urandom: algo de azar del reloj y del proceso.
+        use std::hash::{BuildHasher, Hasher};
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_usize(index);
+            *byte = hasher.finish() as u8;
+        }
+    }
+    bytes
+        .iter()
+        .map(|byte| ALPHABET[*byte as usize % ALPHABET.len()] as char)
+        .collect()
+}
+
+/// El texto tiene forma de `IP:puerto` (lo único que se le pasa a adb).
+pub fn valid_addr(text: &str) -> bool {
+    text.rsplit_once(':').is_some_and(|(ip, port)| {
+        port.parse::<u16>().is_ok() && ip.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok()
+    })
+}
+
+/// Traduce lo que dice `adb connect` cuando no se pudo conectar.
+fn explain_connect(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("refused") {
+        "El teléfono no está escuchando por WiFi (pasa al reiniciarlo). Conéctalo por USB una vez y presiona «Conectar por WiFi».".into()
+    } else if lower.contains("timed out")
+        || lower.contains("no route")
+        || lower.contains("unreachable")
+        || lower.contains("host is down")
+    {
+        "No encuentro el teléfono en la red. Revisa que el teléfono y esta computadora estén en la misma red WiFi.".into()
+    } else if lower.contains("authenticate") {
+        "Desbloquea el teléfono y acepta el aviso de depuración.".into()
+    } else {
+        format!("No se pudo conectar por WiFi: {}", raw.trim())
+    }
+}
+
 /// Cuánto está girado el teléfono, en cuartos de vuelta (0 = vertical).
 ///
 /// Usa el sensor de orientación de Android, que solo está activo con el giro
 /// automático encendido y la pantalla prendida. Si no, devuelve `None`.
 pub fn phone_rotation(serial: &str) -> Option<u8> {
-    let output = run(
+    let output = run_for(
         "adb",
         &["-s", serial, "shell", "dumpsys window | grep -A12 WindowOrientationListener"],
+        Duration::from_secs(3),
     )
     .ok()?;
     parse_rotation(&output)
@@ -427,34 +765,116 @@ mod tests {
         assert_eq!(parse_format(""), None);
     }
 
+    fn phone_from(output: &str) -> Phone {
+        pick(&parse_devices(output))
+    }
+
     #[test]
     fn device_ready() {
         let output = "List of devices attached\n\
             ABC123                 device usb:1-3 product:a57x model:SM_A576B device:a57x transport_id:1\n\n";
         assert_eq!(
-            parse_devices(output),
+            phone_from(output),
             Phone::Ready {
                 serial: "ABC123".into(),
-                model: "SM-A576B".into()
+                model: "SM-A576B".into(),
+                link: Link::Usb,
             }
         );
     }
 
     #[test]
     fn device_problems() {
-        assert_eq!(parse_devices("List of devices attached\n\n"), Phone::Missing);
+        assert_eq!(phone_from("List of devices attached\n\n"), Phone::Missing);
         assert_eq!(
-            parse_devices("List of devices attached\nABC123  unauthorized usb:1-3 transport_id:1\n"),
+            phone_from("List of devices attached\nABC123  unauthorized usb:1-3 transport_id:1\n"),
             Phone::Unauthorized
         );
         assert_eq!(
-            parse_devices("List of devices attached\nABC123  no permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n"),
+            phone_from("List of devices attached\nABC123  no permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html]\n"),
             Phone::NoPermission
         );
         assert_eq!(
-            parse_devices("List of devices attached\nABC123  offline\n"),
+            phone_from("List of devices attached\nABC123  offline usb:1-3\n"),
             Phone::Offline
         );
+    }
+
+    #[test]
+    fn usb_wins_over_wifi() {
+        let output = "List of devices attached\n\
+            192.168.1.75:5555      device product:a57x model:SM_A576B device:a57x transport_id:4\n\
+            ABC123                 device usb:1-3 product:a57x model:SM_A576B device:a57x transport_id:3\n";
+        assert_eq!(
+            phone_from(output),
+            Phone::Ready {
+                serial: "ABC123".into(),
+                model: "SM-A576B".into(),
+                link: Link::Usb,
+            }
+        );
+        let wifi_only = "List of devices attached\n\
+            192.168.1.75:5555      device product:a57x model:SM_A576B device:a57x transport_id:4\n";
+        assert_eq!(
+            phone_from(wifi_only),
+            Phone::Ready {
+                serial: "192.168.1.75:5555".into(),
+                model: "SM-A576B".into(),
+                link: Link::Wifi,
+            }
+        );
+        // Un teléfono por WiFi sin respuesta no es un problema que mostrar.
+        assert_eq!(
+            phone_from("List of devices attached\n192.168.1.75:5555  offline transport_id:4\n"),
+            Phone::Missing
+        );
+    }
+
+    #[test]
+    fn wifi_ip() {
+        let output = "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n\
+            12: rmnet_data0    inet 10.45.2.9/30 scope global rmnet_data0\\       valid_lft forever\n\
+            30: wlan0    inet 192.168.1.75/24 brd 192.168.1.255 scope global wlan0\\       valid_lft forever\n";
+        assert_eq!(parse_wifi_ip(output).as_deref(), Some("192.168.1.75"));
+        let hotspot = "31: swlan0    inet 10.180.33.1/24 scope global swlan0\n";
+        assert_eq!(parse_wifi_ip(hotspot).as_deref(), Some("10.180.33.1"));
+        assert_eq!(parse_wifi_ip("1: lo    inet 127.0.0.1/8 scope host lo\n"), None);
+    }
+
+    #[test]
+    fn mdns_list() {
+        let output = "List of discovered mdns services\n\
+            adb-ZY32JG58TH-AbCdEf\t_adb-tls-connect._tcp\t192.168.1.101:37211\n\
+            ixtli-k3m9px\t_adb-tls-pairing._tcp\t192.168.1.101:41875\n\
+            adb-ZY32JG58TH-AbCdEf\t_adb-tls-connect._tcp\tfe80::1:37211\n\
+            basura\n";
+        let services = parse_mdns(output);
+        assert_eq!(services.len(), 3);
+        assert_eq!(services[0].kind, MdnsKind::Connect);
+        assert_eq!(services[0].addr, "192.168.1.101:37211");
+        assert_eq!(services[1].name, "ixtli-k3m9px");
+        assert_eq!(services[1].kind, MdnsKind::Pairing);
+        assert_eq!(services[2].addr, "fe80::1:37211");
+    }
+
+    #[test]
+    fn pair_reply() {
+        assert_eq!(
+            parse_pair("Successfully paired to 192.168.1.101:41875 [guid=adb-ZY32JG58TH-AbCdEf]\n").as_deref(),
+            Some("adb-ZY32JG58TH-AbCdEf")
+        );
+        assert_eq!(parse_pair("Failed: Wrong password or connection was dropped.\n"), None);
+        assert!(explain_pair("Failed: Wrong password or connection was dropped.").contains("código"));
+        let text = random_text(10);
+        assert_eq!(text.len(), 10);
+        assert!(text.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn connect_errors() {
+        assert!(explain_connect("failed to connect to '192.168.1.75:5555': Connection refused").contains("USB"));
+        assert!(explain_connect("cannot connect to 192.168.1.75:5555: No route to host (113)").contains("misma red"));
+        assert!(explain_connect("timed out").contains("misma red"));
     }
 
     #[test]
@@ -475,10 +895,11 @@ mod tests {
             AAA  unauthorized usb:1-1\n\
             BBB  device usb:1-2 model:Pixel_8\n";
         assert_eq!(
-            parse_devices(output),
+            phone_from(output),
             Phone::Ready {
                 serial: "BBB".into(),
-                model: "Pixel-8".into()
+                model: "Pixel-8".into(),
+                link: Link::Usb,
             }
         );
     }

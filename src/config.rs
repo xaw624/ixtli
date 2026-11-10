@@ -117,28 +117,103 @@ impl Default for Options {
     }
 }
 
-fn path() -> Option<PathBuf> {
+fn path(file: &str) -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("ixtli").join("opciones.conf"))
+    Some(base.join("ixtli").join(file))
+}
+
+/// Escribe un archivo de configuración. Si falla no pasa nada: solo no se recuerda.
+fn write(file: &str, text: &str) {
+    let Some(path) = path(file) else { return };
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let _ = fs::write(path, text);
 }
 
 pub fn load() -> Options {
-    path()
+    path("opciones.conf")
         .and_then(|p| fs::read_to_string(p).ok())
         .map(|text| parse(&text))
         .unwrap_or_default()
 }
 
-/// Guarda las opciones. Si falla no pasa nada: solo no se recuerdan.
 pub fn save(options: &Options) {
-    let Some(path) = path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
+    write("opciones.conf", &serialize(options));
+}
+
+/// El teléfono que se conectó por WiFi, para reconectarlo sin cable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remembered {
+    /// Por cable (`adb tcpip`): `IP:puerto`. Vinculado con código QR: el
+    /// nombre con el que el teléfono se anuncia en la red (`adb-…`).
+    pub addr: String,
+    pub model: String,
+    /// Se vinculó con la depuración inalámbrica (código QR o de 6 dígitos).
+    pub paired: bool,
+    /// Vinculado: la última `IP:puerto` con la que se conectó, por si no se
+    /// anuncia en la red (pasa por VPN).
+    pub last: Option<String>,
+}
+
+impl Remembered {
+    /// Este renglón de `adb devices` es el teléfono recordado.
+    pub fn is(&self, serial: &str, model: &str, wifi: bool) -> bool {
+        if !self.paired {
+            return serial == self.addr;
+        }
+        // adb lo conecta solo con el nombre `adb-…._adb-tls-connect._tcp`;
+        // si Ixtli lo conectó por su IP, se reconoce por el modelo.
+        wifi && (serial.starts_with(&format!("{}.", self.addr)) || model == self.model)
     }
-    let _ = fs::write(path, serialize(options));
+}
+
+pub fn load_phone() -> Option<Remembered> {
+    let text = fs::read_to_string(path("telefono.conf")?).ok()?;
+    parse_phone(&text)
+}
+
+/// Recuerda el teléfono, o lo olvida con `None`.
+pub fn save_phone(phone: Option<&Remembered>) {
+    match phone {
+        Some(phone) => write(
+            "telefono.conf",
+            &format!(
+                "{}={}\nmodelo={}\n{}",
+                if phone.paired { "vinculado" } else { "wifi" },
+                phone.addr,
+                phone.model,
+                phone.last.as_ref().map(|addr| format!("direccion={addr}\n")).unwrap_or_default()
+            ),
+        ),
+        None => {
+            if let Some(path) = path("telefono.conf") {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
+
+fn parse_phone(text: &str) -> Option<Remembered> {
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.split_once('=').filter(|(k, _)| k.trim() == key))
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let model = value("modelo").unwrap_or_else(|| "Android".into());
+    // Solo se acepta lo que tiene la forma esperada, porque se le pasa a adb.
+    if let Some(name) = value("vinculado") {
+        let valid = name.starts_with("adb-")
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        let last = value("direccion").filter(|addr| crate::sys::valid_addr(addr));
+        return valid.then_some(Remembered { addr: name, model, paired: true, last });
+    }
+    let addr = value("wifi").filter(|addr| crate::sys::valid_addr(addr))?;
+    Some(Remembered { addr, model, paired: false, last: None })
 }
 
 /// Deja el ángulo extra entre -180 y 180 grados.
@@ -222,6 +297,28 @@ mod tests {
         };
         assert_eq!(parse(&serialize(&auto)), auto);
         assert_eq!(parse(&serialize(&Options::default())), Options::default());
+    }
+
+    #[test]
+    fn remembered_phone() {
+        let phone = parse_phone("wifi=192.168.1.75:5555\nmodelo=SM-A576B\n").unwrap();
+        assert_eq!(phone.addr, "192.168.1.75:5555");
+        assert_eq!(phone.model, "SM-A576B");
+        assert_eq!(parse_phone("wifi=192.168.1.75:5555\n").unwrap().model, "Android");
+        assert!(!phone.paired);
+        assert_eq!(parse_phone("wifi=-s otro\n"), None);
+        let paired = parse_phone("vinculado=adb-ZY32JG58TH-AbCdEf\nmodelo=moto-g34-5G\n").unwrap();
+        assert!(paired.paired);
+        assert_eq!(parse_phone(&format!("vinculado={}\nmodelo={}\n", paired.addr, paired.model)), Some(paired.clone()));
+        assert!(paired.is("adb-ZY32JG58TH-AbCdEf._adb-tls-connect._tcp", "moto-g34-5G", true));
+        assert!(paired.is("192.168.1.101:37211", "moto-g34-5G", true));
+        assert!(!paired.is("ZY32JG58TH", "moto-g34-5G", false));
+        assert_eq!(parse_phone("vinculado=-s rm\n"), None);
+        let vpn = parse_phone("vinculado=adb-ZY32-AbCd\nmodelo=moto\ndireccion=100.64.0.7:37211\n").unwrap();
+        assert_eq!(vpn.last.as_deref(), Some("100.64.0.7:37211"));
+        assert_eq!(parse_phone("vinculado=adb-ZY32-AbCd\ndireccion=-s x\n").unwrap().last, None);
+        assert_eq!(parse_phone("wifi=192.168.1.75\n"), None);
+        assert_eq!(parse_phone(""), None);
     }
 
     #[test]

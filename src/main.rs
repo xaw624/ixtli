@@ -8,6 +8,7 @@ mod audio;
 mod cli;
 mod config;
 mod engine;
+mod pairing;
 mod gui;
 mod preview;
 mod session;
