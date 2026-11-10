@@ -45,4 +45,5 @@ Faltan por medir, en el Galaxy A57 y en el moto g34: 720p y 1080p, por cable y p
 |-------|----------|----------|----------|-----|-----------|-------|-------|------------|
 
 Faltan por medir, en los dos teléfonos: `ixtli medir 15 --ahorro`, por WiFi (para la
-batería) y por cable. Hay que compararlo con la fila de 720p por WiFi de la tabla base.
+batería) y por cable. Después, `ixtli medir 15 --ahorro --pantalla-apagada` y
+`ixtli medir 15 --pantalla-apagada`, para ver cuánto ahorra cada cosa por separado. Hay que compararlo con la fila de 720p por WiFi de la tabla base.

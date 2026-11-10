@@ -219,6 +219,7 @@ enum Message {
     Saver(bool),
     /// Otro lente del mismo lado, por su número de cámara (`None`, el principal).
     Lens(Option<u16>),
+    ScreenOff(bool),
     Mic(bool),
     Preview(bool),
     LoadModule,
@@ -373,6 +374,10 @@ impl App {
                     self.options.lens = lens;
                     self.options_changed();
                 }
+            }
+            Message::ScreenOff(screen_off) => {
+                self.options.screen_off = screen_off;
+                self.options_changed();
             }
             Message::Saver(saver) => {
                 self.options.saver = saver;
@@ -842,6 +847,7 @@ impl App {
             .push_maybe(self.lens_row())
             .push(quality)
             .push(self.saver_row())
+            .push(self.screen_row())
             .push(self.rotation_row())
             .push(self.angle_row())
             .push(option_row(
@@ -892,6 +898,30 @@ impl App {
             .align_y(Alignment::Center)
             .into(),
         )
+    }
+
+    /// Apagar la pantalla del teléfono mientras la cámara está encendida.
+    fn screen_row(&self) -> Element<'_, Message> {
+        let detail = match (self.options.screen_off, self.state.phase) {
+            (true, Phase::Live) if !self.state.screen_off => "No se pudo apagar la pantalla del teléfono",
+            (true, _) if self.options.rotation == Rotation::Auto => {
+                "El giro automático se queda como estaba al encender"
+            }
+            (true, _) => "Se vuelve a prender al apagar la cámara",
+            (false, _) => "Gasta menos batería",
+        };
+        row![
+            column![
+                text("Apagar la pantalla del celular").size(15),
+                text(detail).size(12).color(MUTED)
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            toggler(self.options.screen_off).on_toggle(Message::ScreenOff),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
     }
 
     /// Modo ahorro. Encendido, dice qué tamaño se está usando.

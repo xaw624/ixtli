@@ -162,22 +162,73 @@ impl Session {
 
     /// Cierra scrcpy con calma (SIGTERM) y, si no responde, a la fuerza.
     pub fn stop(mut self) {
-        if let Ok(Some(_)) = self.child.try_wait() {
+        stop_child(&mut self.child);
+    }
+}
+
+/// Mientras la cámara está encendida, el teléfono no se duerme solo: scrcpy
+/// cambia el tiempo de espera de la pantalla a un día y lo regresa al cerrar.
+const AWAKE_SECONDS: u32 = 24 * 60 * 60;
+
+/// Un segundo scrcpy, sin video ni audio, que solo apaga la pantalla del
+/// teléfono. Hace falta aparte porque con la cámara como fuente scrcpy no
+/// controla el teléfono. Apaga solo el panel: el teléfono sigue despierto y
+/// sin bloquearse, y al cerrar este scrcpy la pantalla se vuelve a prender.
+pub struct ScreenOff {
+    child: Child,
+}
+
+impl ScreenOff {
+    pub fn start(serial: &str) -> Result<ScreenOff, String> {
+        let mut command = Command::new("scrcpy");
+        command
+            .arg("-s")
+            .arg(serial)
+            .args(["--no-video", "--no-audio", "--no-window", "--turn-screen-off"])
+            .arg(format!("--screen-off-timeout={AWAKE_SECONDS}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let child = command
+            .spawn()
+            .map_err(|e| format!("No se pudo apagar la pantalla: {e}"))?;
+        Ok(ScreenOff { child })
+    }
+
+    /// Sigue abierto (y la pantalla, apagada).
+    pub fn running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Lo cierra, y con eso la pantalla se vuelve a prender.
+    pub fn stop(mut self) {
+        stop_child(&mut self.child);
+    }
+}
+
+/// Cierra un proceso con calma (SIGTERM) y, si no responde, a la fuerza.
+fn stop_child(child: &mut Child) {
+    if let Ok(Some(_)) = child.try_wait() {
+        return;
+    }
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
             return;
         }
-        unsafe {
-            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if let Ok(Some(_)) = self.child.try_wait() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        thread::sleep(Duration::from_millis(50));
     }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {

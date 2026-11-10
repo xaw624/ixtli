@@ -193,6 +193,8 @@ pub struct Options {
     /// Otro lente del mismo lado (por ejemplo, el gran angular), por su
     /// número de cámara. `None` es el principal.
     pub lens: Option<u16>,
+    /// Apagar la pantalla del teléfono mientras la cámara está encendida.
+    pub screen_off: bool,
 }
 
 impl Default for Options {
@@ -207,6 +209,7 @@ impl Default for Options {
             preview: true,
             saver: false,
             lens: None,
+            screen_off: false,
         }
     }
 }
@@ -325,7 +328,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\npantalla_apagada={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -344,6 +347,7 @@ fn serialize(o: &Options) -> String {
         yes_no(o.preview),
         yes_no(o.saver),
         o.lens.map(|id| id.to_string()).unwrap_or_else(|| "principal".into()),
+        yes_no(o.screen_off),
     )
 }
 
@@ -367,6 +371,7 @@ fn parse(text: &str) -> Options {
             ("vista_previa", v) => o.preview = v == "si",
             ("ahorro", v) => o.saver = v == "si",
             ("lente", v) => o.lens = v.parse().ok(),
+            ("pantalla_apagada", v) => o.screen_off = v == "si",
             _ => {}
         }
     }
@@ -389,6 +394,7 @@ mod tests {
             preview: false,
             saver: true,
             lens: Some(2),
+            screen_off: true,
         };
         assert_eq!(parse(&serialize(&o)), o);
         let auto = Options {

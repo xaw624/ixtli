@@ -7,11 +7,11 @@ Notas para retomar el proyecto en otra sesión. Actualizado el 10 de noviembre d
 Dónde quedó el trabajo:
 
 - **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
-- **Fase 2 empezada:** existen `ixtli medir`, el **modo ahorro** (interruptor en la
-  ventana y `--ahorro` en la terminal), la **batería a la vista** y **elegir lente**.
-  Todo se probó solo con simuladores.
-- Todo hasta `036c68b` está subido a GitHub. Los commits del modo ahorro, la batería
-  y el lente son **locales**, sin subir.
+- **Fase 2 a medias:** existen `ixtli medir`, el **modo ahorro** (interruptor en la
+  ventana y `--ahorro` en la terminal), la **batería a la vista**, **elegir lente** y
+  **pantalla apagada**. Todo se probó solo con simuladores.
+- Todo hasta `036c68b` está subido a GitHub. Los commits del modo ahorro, la batería,
+  el lente y la pantalla apagada son **locales**, sin subir.
 
 Lo siguiente, en orden:
 
@@ -21,10 +21,10 @@ Lo siguiente, en orden:
    WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS. La batería solo se
    ve por WiFi, porque por cable el teléfono se carga. Después, `ixtli medir 15
    --ahorro` por WiFi, en la tabla del modo ahorro.
-3. **Seguir la fase 2:** pantalla apagada (es opcional y no cambia lo que pasa por
-   defecto, así que se puede programar antes de la tabla). Los sondeos más lentos y la vista previa
-   ligera sí cambian el gasto normal: van después de llenar la tabla base, para ver
-   la diferencia.
+3. **Terminar la fase 2:** ya no queda nada opcional por programar. Los sondeos más
+   lentos y la vista previa ligera sí cambian el gasto normal: van después de llenar
+   la tabla base, para ver la diferencia. Con la tabla llena se mide también
+   `--ahorro --pantalla-apagada`.
 4. Después, la fase 3 (motor de video propio).
 
 Pruebas del modo ahorro que faltan con el teléfono real:
@@ -52,6 +52,20 @@ Pruebas del lente que faltan con el teléfono real:
 - Que `--lente=N` abra de verdad ese lente y que el giro automático lo enderece
   igual que al principal (se supone que el sensor está montado igual).
 - Cómo se ve el renglón «Lente» en la ventana (no se revisó a la vista).
+
+Pruebas de la pantalla apagada que faltan con el teléfono real (es lo más incierto):
+
+- **Que la cámara siga mandando video con la pantalla apagada**, en el A57 y en el
+  moto g34, por cable y por WiFi, durante 15 minutos o más. scrcpy apaga solo el
+  panel y el teléfono sigue despierto, pero no se ha probado con la cámara.
+- Que la pantalla se vuelva a prender al apagar la cámara, al cerrar Ixtli y al
+  desconectar el cable.
+- Que el teléfono no se bloquee solo (Ixtli pide `--screen-off-timeout` de un día,
+  que scrcpy regresa a su valor al cerrar). Revisar después en Ajustes que el tiempo
+  de espera de pantalla volvió a ser el de antes.
+- Qué pasa si se presiona el botón de encendido del teléfono con la pantalla apagada.
+- Si el sensor de giro sigue funcionando con el panel apagado. Si sí, se puede quitar
+  la regla de dejar el giro fijo.
 
 Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inestable):
 
@@ -89,6 +103,8 @@ moto g34 5G:
 - Modo ahorro (cerca de 480p, 15 cuadros/s, 2 Mb/s), probado solo con simuladores.
 - Batería del teléfono en la ventana, con aviso bajo 20 %; probado solo con simuladores.
 - Elegir otro lente del mismo lado (`ixtli lentes`, `--lente=N`); probado solo con
+  simuladores.
+- Apagar la pantalla del teléfono mientras la cámara está encendida; probado solo con
   simuladores.
 - **WiFi:** «Conectar por WiFi» con el cable una vez
   (`adb tcpip`), probado con el moto g34; y «Vincular con QR» sin cable
@@ -215,9 +231,16 @@ motor propio.
   - tasa de bits: 2 Mb/s (scrcpy usa 8 Mb/s).
   Si no puede leer la lista, usa 720p con 2 Mb/s. Con ahorro se ignora la calidad
   elegida. `ixtli medir --ahorro` anota en la fila el tamaño que se usó.
-- **Pantalla apagada:** apagar la pantalla del teléfono al encender la cámara. No es
-  compatible con el giro automático, que necesita la pantalla prendida: al activarla,
-  el giro pasa a fijo.
+- **Pantalla apagada.** Hecho, probado solo con simuladores. Con la cámara como
+  fuente scrcpy no controla el teléfono (`Cannot request to turn screen off if
+  control is disabled`), así que Ixtli abre un segundo scrcpy sin video ni audio
+  (`ScreenOff` en `session.rs`: `--no-video --no-audio --no-window --turn-screen-off
+  --screen-off-timeout=86400`). Se abre después de la cámara y se cierra antes; al
+  cerrarlo, la pantalla se prende. Si no se puede apagar, la cámara sigue y la
+  ventana lo dice. El giro automático se calcula al encender y se queda fijo mientras
+  la pantalla está apagada (no se cambia la opción guardada). Se guarda como
+  `pantalla_apagada=si`; en la terminal, `--pantalla-apagada` / `--pantalla-prendida`.
+  Cada cambio de opción reabre la cámara, y con eso la pantalla se prende un momento.
 - **Vista previa ligera:** menos cuadros por segundo y se detiene sola cuando la
   ventana está minimizada o tapada.
 - **Batería a la vista.** Hecho, probado solo con simuladores. El motor lee

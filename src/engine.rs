@@ -10,7 +10,7 @@ use crate::audio;
 use crate::config::{self, Capture, Options, Remembered, Rotation};
 use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
-use crate::session::{Session, LOST_WIFI};
+use crate::session::{ScreenOff, Session, LOST_WIFI};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, PhoneCamera, VirtualCam};
 
 /// Cada cuánto se intenta reconectar sin cable el teléfono recordado.
@@ -45,6 +45,8 @@ pub struct Snapshot {
     pub battery: Option<Battery>,
     /// Las cámaras del teléfono conectado, cuando ya se leyeron.
     pub cameras: Option<Vec<PhoneCamera>>,
+    /// La pantalla del teléfono está apagada por Ixtli en la sesión en vivo.
+    pub screen_off: bool,
     /// Último problema, ya explicado para el usuario.
     pub error: Option<String>,
     pub wifi: WifiStatus,
@@ -263,9 +265,11 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 }
                 None if running.session.is_live() => {
                     let capture = running.capture.clone();
+                    let screen_off = running.screen.as_mut().is_some_and(ScreenOff::running);
                     update(&shared, |state| {
                         state.phase = Phase::Live;
                         state.capture = Some(capture);
+                        state.screen_off = screen_off;
                     });
                     // Giro automático: si el teléfono cambió de posición, se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
@@ -556,6 +560,8 @@ struct Running {
     serial: String,
     link: Link,
     capture: Capture,
+    /// El scrcpy que mantiene apagada la pantalla, si se pidió.
+    screen: Option<ScreenOff>,
     last_turn_check: Instant,
     last_ping: Instant,
     missed_pings: u8,
@@ -575,8 +581,13 @@ impl Running {
 
     /// Con giro automático: el teléfono ya no está en la posición con la que
     /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos.
+    ///
+    /// Con la pantalla apagada no se pregunta: el sensor de giro de Android
+    /// necesita la pantalla prendida, así que el giro se queda como estaba al
+    /// encender.
     fn turned(&mut self) -> bool {
         if self.options.rotation != Rotation::Auto
+            || self.screen.as_mut().is_some_and(ScreenOff::running)
             || self.last_turn_check.elapsed() < Duration::from_millis(1500)
         {
             return false;
@@ -657,6 +668,9 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             serial: serial.to_string(),
             link,
             capture,
+            // Se apaga después de abrir la cámara, cuando ya se leyó el giro.
+            // Si no se puede, la cámara sigue con la pantalla prendida.
+            screen: options.screen_off.then(|| ScreenOff::start(serial).ok()).flatten(),
             last_turn_check: Instant::now(),
             last_ping: Instant::now(),
             missed_pings: 0,
@@ -675,6 +689,10 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
 fn end(session: &mut Option<Running>, keep_mic: bool) {
     if let Some(running) = session.take() {
         let with_mic = running.session.with_mic;
+        // Primero se prende la pantalla, por si la cámara tarda en cerrar.
+        if let Some(screen) = running.screen {
+            screen.stop();
+        }
         running.session.stop();
         if with_mic && !keep_mic {
             audio::remove();
