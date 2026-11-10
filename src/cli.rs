@@ -28,6 +28,7 @@ Uso:
   ixtli medir [MINUTOS] [opciones]
                              Enciende la cámara y mide cada minuto la batería del teléfono
                              y la CPU y memoria en la computadora (10 minutos si no dices).
+  ixtli lentes               Muestra las cámaras del teléfono, para elegir con --lente.
   ixtli vincular             Vincula el teléfono sin cable con un código QR.
   ixtli vincular IP:PUERTO CÓDIGO
                              Vincula con el código de 6 dígitos que muestra el teléfono
@@ -35,6 +36,9 @@ Uso:
 
 Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
   --frontal | --trasera      Qué cámara del teléfono usar.
+  --lente=N | --lente=principal
+                             Otro lente del mismo lado, por ejemplo el gran angular
+                             (los números salen en «ixtli lentes»).
   --720 | --1080             Calidad del video.
   --ahorro | --sin-ahorro    Modo ahorro: cerca de 480p, 15 cuadros/s y menos tasa de bits,
                              para que el teléfono gaste menos batería.
@@ -67,6 +71,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("encender" | "start") => start(&args[1..]),
         Some("medir" | "measure") => measure_run(&args[1..]),
         Some("vincular" | "pair") => pair(&args[1..]),
+        Some("lentes" | "lenses") => lenses(),
         Some("wifi") => match args.get(1).map(String::as_str) {
             None => wifi(),
             Some("olvidar" | "forget") => {
@@ -322,6 +327,39 @@ fn pair(args: &[String]) -> ExitCode {
     }
 }
 
+/// `ixtli lentes`: las cámaras del teléfono, agrupadas por lado.
+fn lenses() -> ExitCode {
+    let serial = match sys::phone() {
+        Phone::Ready { serial, .. } => serial,
+        other => {
+            eprintln!("{}", other.advice());
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("Preguntando al teléfono...");
+    let Some(cameras) = sys::phone_cameras(&serial) else {
+        eprintln!("El teléfono no respondió con su lista de cámaras.");
+        return ExitCode::FAILURE;
+    };
+    for (facing, name, flag) in [(Facing::Front, "Frontal", "--frontal"), (Facing::Back, "Trasera", "--trasera")] {
+        let lenses = config::lenses(&cameras, facing);
+        if lenses.is_empty() {
+            continue;
+        }
+        println!("\n{name}:");
+        for (position, camera) in lenses.iter().enumerate() {
+            let mp = camera.megapixels().map(|mp| format!(", sensor de {mp} MP")).unwrap_or_default();
+            if position == 0 {
+                println!("  principal{mp}: ixtli encender {flag}");
+            } else {
+                println!("  lente {}{mp}: ixtli encender {flag} --lente={}", camera.id, camera.id);
+            }
+        }
+    }
+    println!("\nAndroid no dice cuál es el gran angular: prueba cada uno.");
+    ExitCode::SUCCESS
+}
+
 /// Lee las opciones de «encender» sobre las guardadas en la ventana.
 fn read_options(flags: &[String]) -> Result<Options, ExitCode> {
     let mut options = config::load();
@@ -331,6 +369,14 @@ fn read_options(flags: &[String]) -> Result<Options, ExitCode> {
             "--trasera" => options.facing = Facing::Back,
             "--720" => options.quality = Quality::Hd,
             "--1080" => options.quality = Quality::FullHd,
+            "--lente=principal" => options.lens = None,
+            lens if lens.starts_with("--lente=") => match lens["--lente=".len()..].parse::<u16>() {
+                Ok(id) => options.lens = Some(id),
+                Err(_) => {
+                    eprintln!("El lente es un número de «ixtli lentes», o «principal».");
+                    return Err(ExitCode::from(2));
+                }
+            },
             "--ahorro" => options.saver = true,
             "--sin-ahorro" => options.saver = false,
             "--espejo" => options.mirror = true,
@@ -435,6 +481,10 @@ fn measure_run(args: &[String]) -> ExitCode {
         },
         if options.mic { " + micro" } else { "" },
     );
+    let setup = match capture.as_ref().and_then(|c| c.camera_id.as_ref()) {
+        Some(id) => format!("{setup}, lente {id}"),
+        None => setup,
+    };
     let by = match link {
         Link::Usb => "USB",
         Link::Wifi => "WiFi",

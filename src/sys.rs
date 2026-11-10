@@ -650,20 +650,36 @@ pub fn restart_adb() {
 /// Una cámara del teléfono, según `scrcpy --list-camera-sizes`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhoneCamera {
+    /// Número para `scrcpy --camera-id`.
+    pub id: String,
     /// `None` si es externa o de un tipo que Ixtli no usa.
     pub facing: Option<Facing>,
+    /// Tamaño del sensor, en píxeles.
+    pub sensor: Option<(u32, u32)>,
     /// Cuadros por segundo que acepta (`fps=[15, 24, 30]`).
     pub fps: Vec<u16>,
     /// Tamaños de captura válidos, como los escribe scrcpy (ancho × alto).
     pub sizes: Vec<(u32, u32)>,
 }
 
+impl PhoneCamera {
+    /// Megapíxeles del sensor, para distinguir un lente de otro.
+    pub fn megapixels(&self) -> Option<u32> {
+        let (w, h) = self.sensor?;
+        Some(((u64::from(w) * u64::from(h) + 500_000) / 1_000_000) as u32)
+    }
+}
+
 /// Las cámaras del teléfono. Preguntar tarda un par de segundos (scrcpy
 /// copia su servidor al teléfono), así que la respuesta se guarda mientras
 /// Ixtli siga abierto. `None` si no se pudo saber.
+///
+/// Si dos hilos preguntan a la vez, el segundo espera la respuesta del
+/// primero en lugar de abrir otro scrcpy.
 pub fn phone_cameras(serial: &str) -> Option<Vec<PhoneCamera>> {
     static KNOWN: Mutex<Vec<(String, Vec<PhoneCamera>)>> = Mutex::new(Vec::new());
-    if let Some((_, cameras)) = KNOWN.lock().unwrap().iter().find(|(known, _)| known == serial) {
+    let mut known = KNOWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, cameras)) = known.iter().find(|(id, _)| id == serial) {
         return Some(cameras.clone());
     }
     let output = output_for(
@@ -681,7 +697,7 @@ pub fn phone_cameras(serial: &str) -> Option<Vec<PhoneCamera>> {
     if cameras.is_empty() {
         return None;
     }
-    KNOWN.lock().unwrap().push((serial.to_string(), cameras.clone()));
+    known.push((serial.to_string(), cameras.clone()));
     Some(cameras)
 }
 
@@ -703,18 +719,24 @@ fn parse_cameras(text: &str) -> Vec<PhoneCamera> {
     let mut high_speed = false;
     for line in text.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix("--camera-id=") {
+            let id = rest.split_whitespace().next().unwrap_or("").to_string();
             let details = rest.split_once('(').map(|(_, d)| d).unwrap_or("");
-            let facing = match details.split(',').next().map(str::trim) {
+            let mut fields = details.split(',').map(str::trim);
+            let facing = match fields.next() {
                 Some("front") => Some(Facing::Front),
                 Some("back") => Some(Facing::Back),
                 _ => None,
             };
+            let sensor = fields.next().and_then(|size| {
+                let (w, h) = size.trim_end_matches(')').split_once('x')?;
+                Some((w.parse().ok()?, h.parse().ok()?))
+            });
             let fps = details
                 .split_once("fps=[")
                 .and_then(|(_, list)| list.split_once(']'))
                 .map(|(list, _)| list.split(',').filter_map(|n| n.trim().parse().ok()).collect())
                 .unwrap_or_default();
-            cameras.push(PhoneCamera { facing, fps, sizes: Vec::new() });
+            cameras.push(PhoneCamera { id, facing, sensor, fps, sizes: Vec::new() });
             high_speed = false;
         } else if line.starts_with("High speed") {
             high_speed = true;
@@ -869,6 +891,11 @@ mod tests {
 ";
         let cameras = parse_cameras(text);
         assert_eq!(cameras.len(), 3);
+        assert_eq!(cameras[0].id, "0");
+        assert_eq!(cameras[0].sensor, Some((4000, 3000)));
+        assert_eq!(cameras[0].megapixels(), Some(12));
+        assert_eq!(cameras[2].id, "2");
+        assert_eq!(cameras[2].sensor, Some((1920, 1080)));
         assert_eq!(cameras[0].facing, Some(Facing::Back));
         assert_eq!(cameras[0].fps, vec![15, 24, 30]);
         assert_eq!(cameras[0].sizes, vec![(1920, 1080), (1280, 720), (864, 480)]);

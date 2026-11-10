@@ -11,7 +11,7 @@ use crate::config::{self, Capture, Options, Remembered, Rotation};
 use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
 use crate::session::{Session, LOST_WIFI};
-use crate::sys::{self, DeviceState, Deps, Link, Phone, VirtualCam};
+use crate::sys::{self, DeviceState, Deps, Link, Phone, PhoneCamera, VirtualCam};
 
 /// Cada cuánto se intenta reconectar sin cable el teléfono recordado.
 const RECONNECT_EVERY: Duration = Duration::from_secs(10);
@@ -43,6 +43,8 @@ pub struct Snapshot {
     pub capture: Option<Capture>,
     /// La batería del teléfono conectado, si se pudo leer.
     pub battery: Option<Battery>,
+    /// Las cámaras del teléfono conectado, cuando ya se leyeron.
+    pub cameras: Option<Vec<PhoneCamera>>,
     /// Último problema, ya explicado para el usuario.
     pub error: Option<String>,
     pub wifi: WifiStatus,
@@ -193,6 +195,8 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     let mut pairing: Option<Pairing> = None;
     // A qué teléfono y cuándo se le leyó la batería por última vez.
     let mut battery_read: Option<(String, Instant)> = None;
+    // A qué teléfono se le pidió ya la lista de cámaras.
+    let mut cameras_asked: Option<String> = None;
 
     loop {
         // --- Revisar el sistema -------------------------------------------
@@ -330,6 +334,23 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
         };
         match serial {
             Some(serial) => {
+                // La lista de cámaras tarda un par de segundos: se pide aparte
+                // para no detener al motor.
+                if cameras_asked.as_ref() != Some(&serial) {
+                    cameras_asked = Some(serial.clone());
+                    update(&shared, |state| state.cameras = None);
+                    let shared = shared.clone();
+                    let serial = serial.clone();
+                    thread::spawn(move || {
+                        let cameras = sys::phone_cameras(&serial);
+                        update(&shared, |state| {
+                            let same = matches!(&state.phone, Phone::Ready { serial: now, .. } if *now == serial);
+                            if same {
+                                state.cameras = cameras;
+                            }
+                        });
+                    });
+                }
                 // Se lee al aparecer el teléfono (o al cambiar de cable a WiFi)
                 // y después cada minuto.
                 let due = battery_read
@@ -343,7 +364,11 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             }
             None => {
                 battery_read = None;
-                update(&shared, |state| state.battery = None);
+                cameras_asked = None;
+                update(&shared, |state| {
+                    state.battery = None;
+                    state.cameras = None;
+                });
             }
         }
 
@@ -620,8 +645,8 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             Rotation::Fixed(_) => None,
         };
         let degrees = options.rotation.degrees(options.facing, quarters);
-        // Solo el modo ahorro necesita saber qué tamaños acepta la cámara.
-        let cameras = options.saver.then(|| sys::phone_cameras(serial)).flatten();
+        // El modo ahorro y el lente necesitan saber qué cámaras hay.
+        let cameras = options.needs_cameras().then(|| sys::phone_cameras(serial)).flatten();
         let capture = options.capture(cameras.as_deref());
         Session::start(serial, link, &cam, options, &capture, degrees).map(|session| (session, capture))
     })();

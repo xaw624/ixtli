@@ -69,7 +69,11 @@ impl Session {
             .arg("-s")
             .arg(serial)
             .arg("--video-source=camera")
-            .arg(format!("--camera-facing={}", options.facing.scrcpy()))
+            // scrcpy no deja pedir el lente y el lado a la vez.
+            .arg(match &capture.camera_id {
+                Some(id) => format!("--camera-id={id}"),
+                None => format!("--camera-facing={}", options.facing.scrcpy()),
+            })
             .arg(format!("--camera-size={}", capture.size))
             .arg(format!("--camera-fps={}", capture.fps))
             .arg(format!("--v4l2-sink={}", cam.path.display()))

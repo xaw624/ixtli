@@ -8,10 +8,10 @@ Dónde quedó el trabajo:
 
 - **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
 - **Fase 2 empezada:** existen `ixtli medir`, el **modo ahorro** (interruptor en la
-  ventana y `--ahorro` en la terminal) y la **batería a la vista**. Los tres se
-  probaron solo con simuladores.
-- Todo hasta `036c68b` está subido a GitHub. Los commits del modo ahorro y de la
-  batería son **locales**, sin subir.
+  ventana y `--ahorro` en la terminal), la **batería a la vista** y **elegir lente**.
+  Todo se probó solo con simuladores.
+- Todo hasta `036c68b` está subido a GitHub. Los commits del modo ahorro, la batería
+  y el lente son **locales**, sin subir.
 
 Lo siguiente, en orden:
 
@@ -21,9 +21,8 @@ Lo siguiente, en orden:
    WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS. La batería solo se
    ve por WiFi, porque por cable el teléfono se carga. Después, `ixtli medir 15
    --ahorro` por WiFi, en la tabla del modo ahorro.
-3. **Seguir la fase 2**, en este orden: elegir lente y pantalla apagada (las dos son
-   opcionales y no cambian lo que pasa por defecto, así que se
-   pueden programar antes de la tabla). Los sondeos más lentos y la vista previa
+3. **Seguir la fase 2:** pantalla apagada (es opcional y no cambia lo que pasa por
+   defecto, así que se puede programar antes de la tabla). Los sondeos más lentos y la vista previa
    ligera sí cambian el gasto normal: van después de llenar la tabla base, para ver
    la diferencia.
 4. Después, la fase 3 (motor de video propio).
@@ -44,6 +43,15 @@ Pruebas de la batería que faltan con el teléfono real:
 - Que la ventana muestre el nivel bajo «Teléfono» («Batería: 87 %, cargando.») en los
   dos teléfonos, por cable y por WiFi. No se revisó a la vista.
 - El aviso en ámbar bajo el estado cuando baja de 20 % por WiFi.
+
+Pruebas del lente que faltan con el teléfono real:
+
+- `ixtli lentes` en el A57 y el moto g34: cuántas cámaras muestra Android de cada
+  lado. Muchos teléfonos (sobre todo Samsung) esconden el gran angular a las apps;
+  entonces el renglón «Lente» no aparece y no hay nada que hacer desde scrcpy.
+- Que `--lente=N` abra de verdad ese lente y que el giro automático lo enderece
+  igual que al principal (se supone que el sensor está montado igual).
+- Cómo se ve el renglón «Lente» en la ventana (no se revisó a la vista).
 
 Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inestable):
 
@@ -80,6 +88,8 @@ moto g34 5G:
 - Modo terminal: `ixtli estado`, `ixtli encender`, `ixtli --encender`.
 - Modo ahorro (cerca de 480p, 15 cuadros/s, 2 Mb/s), probado solo con simuladores.
 - Batería del teléfono en la ventana, con aviso bajo 20 %; probado solo con simuladores.
+- Elegir otro lente del mismo lado (`ixtli lentes`, `--lente=N`); probado solo con
+  simuladores.
 - **WiFi:** «Conectar por WiFi» con el cable una vez
   (`adb tcpip`), probado con el moto g34; y «Vincular con QR» sin cable
   (`adb pair` + mDNS, módulo `pairing.rs`), probado solo con un adb simulado.
@@ -216,8 +226,17 @@ motor propio.
   renglón «Teléfono». Debajo de 20 % y sin carga, el renglón se pone ámbar y aparece
   un aviso bajo el estado: por WiFi sugiere el cable; por USB, un cargador (hay
   cables y puertos que no cargan). `ixtli encender` avisa una vez por sesión.
-- **Elegir lente:** lista de cámaras del teléfono (`scrcpy --list-cameras`,
-  `--camera-id`) para usar el gran angular u otro lente.
+- **Elegir lente.** Hecho, probado solo con simuladores. Usa la misma lista que el
+  modo ahorro (`--list-camera-sizes` trae el número de cada cámara y el tamaño del
+  sensor). Al aparecer el teléfono, el motor la pide en un hilo aparte (tarda un par
+  de segundos y abre un momento el servidor de scrcpy en el teléfono, una vez por
+  teléfono mientras Ixtli siga abierto). Si hay más de una cámara del lado elegido,
+  la ventana muestra el renglón «Lente» con «Principal» y los números de las otras,
+  y los megapíxeles del sensor; Android no dice cuál es el gran angular. Se guarda
+  como `lente=N` y se pide con `--camera-id=N` en lugar de `--camera-facing`. Si el
+  teléfono no tiene ese lente de ese lado, se usa el principal. Al cambiar de
+  frontal a trasera se vuelve al principal. En la terminal: `ixtli lentes` y
+  `--lente=N` / `--lente=principal`.
 - **Sondeos más lentos:** hoy se pregunta el giro cada 1.5 s y, por WiFi, se hace un
   «ping» cada 3 s; cada pregunta arranca un proceso en el teléfono. Espaciarlos.
 

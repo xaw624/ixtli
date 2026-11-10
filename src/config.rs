@@ -38,6 +38,9 @@ impl Quality {
 /// Lo que se le pide a la cámara del teléfono en una sesión.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capture {
+    /// Lente elegido (`--camera-id`); `None` usa la primera cámara del lado
+    /// pedido (`--camera-facing`).
+    pub camera_id: Option<String>,
     /// Para `scrcpy --camera-size`, por ejemplo `1280x720`.
     pub size: String,
     /// Cuadros por segundo (`--camera-fps`).
@@ -66,12 +69,18 @@ impl Options {
     /// teléfono) un tamaño cercano a 480p y 15 o 24 cuadros/s; si no hay
     /// lista, se queda en 720p, que todos los teléfonos aceptan, y solo
     /// baja la tasa de bits.
+    ///
+    /// Si se eligió otro lente y el teléfono lo tiene de ese lado, se usa;
+    /// si no (por ejemplo, con otro teléfono), se usa el principal.
     pub fn capture(&self, cameras: Option<&[crate::sys::PhoneCamera]>) -> Capture {
+        let lenses = lenses(cameras.unwrap_or_default(), self.facing);
+        let chosen = self.lens.and_then(|lens| lenses.iter().copied().find(|c| c.id == lens.to_string()));
+        let camera_id = chosen.map(|camera| camera.id.clone());
         if !self.saver {
-            return Capture { size: self.quality.size().into(), fps: 30, bit_rate: None };
+            return Capture { camera_id, size: self.quality.size().into(), fps: 30, bit_rate: None };
         }
-        // scrcpy usa la primera cámara que mira hacia el lado pedido.
-        let camera = cameras.and_then(|list| list.iter().find(|c| c.facing == Some(self.facing)));
+        // Sin lente elegido, scrcpy usa la primera cámara del lado pedido.
+        let camera = chosen.or(lenses.first().copied());
         let size = camera
             .and_then(|camera| saver_size(&camera.sizes))
             .map(|(w, h)| format!("{w}x{h}"))
@@ -79,8 +88,19 @@ impl Options {
         let fps = camera
             .and_then(|camera| [15, 24].into_iter().find(|fps| camera.fps.contains(fps)))
             .unwrap_or(30);
-        Capture { size, fps, bit_rate: Some(SAVER_BIT_RATE) }
+        Capture { camera_id, size, fps, bit_rate: Some(SAVER_BIT_RATE) }
     }
+
+    /// Hacen falta las cámaras del teléfono para saber qué pedirle.
+    pub fn needs_cameras(&self) -> bool {
+        self.saver || self.lens.is_some()
+    }
+}
+
+/// Las cámaras del teléfono que miran hacia `facing`, en el orden de
+/// Android: la primera es la principal, la que scrcpy usa si no se elige.
+pub fn lenses(cameras: &[crate::sys::PhoneCamera], facing: Facing) -> Vec<&crate::sys::PhoneCamera> {
+    cameras.iter().filter(|camera| camera.facing == Some(facing)).collect()
 }
 
 /// El tamaño del modo ahorro: el más cercano a 480 de alto, de preferencia
@@ -170,6 +190,9 @@ pub struct Options {
     /// Modo ahorro: menos resolución, cuadros y tasa de bits que la calidad
     /// elegida, para que el teléfono gaste menos batería.
     pub saver: bool,
+    /// Otro lente del mismo lado (por ejemplo, el gran angular), por su
+    /// número de cámara. `None` es el principal.
+    pub lens: Option<u16>,
 }
 
 impl Default for Options {
@@ -183,6 +206,7 @@ impl Default for Options {
             mic: true,
             preview: true,
             saver: false,
+            lens: None,
         }
     }
 }
@@ -301,7 +325,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -319,6 +343,7 @@ fn serialize(o: &Options) -> String {
         yes_no(o.mic),
         yes_no(o.preview),
         yes_no(o.saver),
+        o.lens.map(|id| id.to_string()).unwrap_or_else(|| "principal".into()),
     )
 }
 
@@ -341,6 +366,7 @@ fn parse(text: &str) -> Options {
             ("microfono", v) => o.mic = v == "si",
             ("vista_previa", v) => o.preview = v == "si",
             ("ahorro", v) => o.saver = v == "si",
+            ("lente", v) => o.lens = v.parse().ok(),
             _ => {}
         }
     }
@@ -362,6 +388,7 @@ mod tests {
             mic: false,
             preview: false,
             saver: true,
+            lens: Some(2),
         };
         assert_eq!(parse(&serialize(&o)), o);
         let auto = Options {
@@ -395,7 +422,36 @@ mod tests {
     }
 
     fn camera(facing: Facing, fps: &[u16], sizes: &[(u32, u32)]) -> crate::sys::PhoneCamera {
-        crate::sys::PhoneCamera { facing: Some(facing), fps: fps.to_vec(), sizes: sizes.to_vec() }
+        crate::sys::PhoneCamera {
+            id: if facing == Facing::Back { "0" } else { "1" }.into(),
+            facing: Some(facing),
+            sensor: None,
+            fps: fps.to_vec(),
+            sizes: sizes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn choosing_a_lens() {
+        let wide = crate::sys::PhoneCamera { id: "2".into(), ..camera(Facing::Back, &[30], &[(1280, 720), (640, 360)]) };
+        let cameras = [camera(Facing::Back, &[15, 30], &[(1280, 720), (854, 480)]), camera(Facing::Front, &[30], &[]), wide];
+        assert_eq!(lenses(&cameras, Facing::Back).len(), 2);
+        assert_eq!(lenses(&cameras, Facing::Front).len(), 1);
+        let back = Options { facing: Facing::Back, ..Options::default() };
+        assert!(!back.needs_cameras());
+        assert_eq!(back.capture(Some(&cameras)).camera_id, None);
+        let on_wide = Options { lens: Some(2), ..back };
+        assert!(on_wide.needs_cameras());
+        assert_eq!(on_wide.capture(Some(&cameras)).camera_id.as_deref(), Some("2"));
+        // El modo ahorro usa los tamaños del lente elegido.
+        let saver = Options { saver: true, ..on_wide }.capture(Some(&cameras));
+        assert_eq!((saver.size.as_str(), saver.fps), ("640x360", 30));
+        // Un lente que este teléfono no tiene, o de otro lado: el principal.
+        assert_eq!(Options { lens: Some(7), ..back }.capture(Some(&cameras)).camera_id, None);
+        assert_eq!(Options { facing: Facing::Front, ..on_wide }.capture(Some(&cameras)).camera_id, None);
+        assert_eq!(on_wide.capture(None).camera_id, None);
+        assert_eq!(parse("lente=principal\n").lens, None);
+        assert_eq!(parse("lente=3\n").lens, Some(3));
     }
 
     #[test]
@@ -403,7 +459,7 @@ mod tests {
         let normal = Options::default();
         assert_eq!(
             normal.capture(None),
-            Capture { size: "1280x720".into(), fps: 30, bit_rate: None }
+            Capture { camera_id: None, size: "1280x720".into(), fps: 30, bit_rate: None }
         );
         assert_eq!(Options { quality: Quality::FullHd, ..normal }.capture(None).size, "1920x1080");
 
@@ -411,14 +467,14 @@ mod tests {
         // Sin lista del teléfono: 720p, que siempre funciona, con menos tasa de bits.
         assert_eq!(
             saver.capture(None),
-            Capture { size: "1280x720".into(), fps: 30, bit_rate: Some("2M") }
+            Capture { camera_id: None, size: "1280x720".into(), fps: 30, bit_rate: Some("2M") }
         );
         let cameras = [
             camera(Facing::Back, &[15, 24, 30], &[(1920, 1080), (1280, 720), (864, 480), (640, 480), (320, 240)]),
             camera(Facing::Front, &[24, 30], &[(1920, 1080), (1280, 720), (720, 480), (640, 480), (960, 540)]),
         ];
         let back = Options { facing: Facing::Back, ..saver }.capture(Some(&cameras));
-        assert_eq!(back, Capture { size: "864x480".into(), fps: 15, bit_rate: Some("2M") });
+        assert_eq!(back, Capture { camera_id: None, size: "864x480".into(), fps: 15, bit_rate: Some("2M") });
         assert_eq!(back.describe(), "864x480, 15 cuadros/s, 2 Mb/s");
         // La frontal no tiene 16:9 de 480 de alto: el panorámico más cercano es 960x540.
         let front = saver.capture(Some(&cameras));

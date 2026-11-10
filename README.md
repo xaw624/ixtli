@@ -16,6 +16,7 @@ cualquier otro programa.
 - Cámara frontal o trasera, en 720p o 1080p.
 - Modo ahorro (cerca de 480p y 15 cuadros por segundo) para gastar menos batería.
 - Batería del teléfono en la ventana, con un aviso cuando baja de 20 %.
+- Elegir otro lente (por ejemplo, el gran angular), si el teléfono lo deja usar.
 - Giro de la imagen: automático según la posición del teléfono, en cuartos de vuelta,
   a un ángulo personalizado y con efecto espejo.
 - Vista previa dentro de la ventana, que se puede desacoplar a una ventana aparte.
@@ -164,6 +165,7 @@ ixtli estado                       # revisa si todo está listo
 ixtli encender                     # enciende; Ctrl+C para apagar
 ixtli encender --trasera --1080    # cámara trasera en 1080p
 ixtli encender --ahorro            # modo ahorro: gasta menos batería
+ixtli lentes                       # cámaras del teléfono, para usar --lente=N
 ixtli encender --giro=90           # imagen girada 90°
 ixtli encender --espejo --angulo=15  # efecto espejo y 15° extra
 ixtli encender --sin-micro         # solo la cámara

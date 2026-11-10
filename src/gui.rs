@@ -217,6 +217,8 @@ enum Message {
     Facing(Facing),
     Quality(Quality),
     Saver(bool),
+    /// Otro lente del mismo lado, por su número de cámara (`None`, el principal).
+    Lens(Option<u16>),
     Mic(bool),
     Preview(bool),
     LoadModule,
@@ -355,12 +357,22 @@ impl App {
                 }
             }
             Message::Facing(facing) => {
+                // Los lentes son de un lado: al cambiar de lado se vuelve al principal.
+                if self.options.facing != facing {
+                    self.options.lens = None;
+                }
                 self.options.facing = facing;
                 self.options_changed();
             }
             Message::Quality(quality) => {
                 self.options.quality = quality;
                 self.options_changed();
+            }
+            Message::Lens(lens) => {
+                if self.options.lens != lens {
+                    self.options.lens = lens;
+                    self.options_changed();
+                }
             }
             Message::Saver(saver) => {
                 self.options.saver = saver;
@@ -810,38 +822,76 @@ impl App {
 
     fn options_card(&self) -> Element<'_, Message> {
         let options = &self.options;
-        let list = column![
-            option_row(
-                "Cámara",
-                segmented(
-                    &[(Facing::Front, "Frontal"), (Facing::Back, "Trasera")],
-                    options.facing,
-                    Message::Facing,
-                ),
+        let facing = option_row(
+            "Cámara",
+            segmented(
+                &[(Facing::Front, "Frontal"), (Facing::Back, "Trasera")],
+                options.facing,
+                Message::Facing,
             ),
-            option_row(
-                "Calidad",
-                segmented(
-                    &[(Quality::Hd, "720p"), (Quality::FullHd, "1080p")],
-                    options.quality,
-                    Message::Quality,
-                ),
+        );
+        let quality = option_row(
+            "Calidad",
+            segmented(
+                &[(Quality::Hd, "720p"), (Quality::FullHd, "1080p")],
+                options.quality,
+                Message::Quality,
             ),
-            self.saver_row(),
-            self.rotation_row(),
-            self.angle_row(),
-            option_row(
+        );
+        let list = column![facing]
+            .push_maybe(self.lens_row())
+            .push(quality)
+            .push(self.saver_row())
+            .push(self.rotation_row())
+            .push(self.angle_row())
+            .push(option_row(
                 "Usar el micrófono del celular",
                 toggler(options.mic).on_toggle(Message::Mic).into(),
-            ),
-            option_row(
+            ))
+            .push(option_row(
                 "Mostrar vista previa",
                 toggler(options.preview).on_toggle(Message::Preview).into(),
-            ),
-        ]
-        .spacing(14)
-        ;
+            ))
+            .spacing(14);
         card(list)
+    }
+
+    /// Lentes del lado elegido. Solo aparece si el teléfono tiene más de uno.
+    fn lens_row(&self) -> Option<Element<'_, Message>> {
+        let cameras = self.state.cameras.as_deref()?;
+        let lenses: Vec<_> = config::lenses(cameras, self.options.facing)
+            .into_iter()
+            .filter_map(|camera| Some((camera.id.parse::<u16>().ok()?, camera)))
+            .collect();
+        if lenses.len() < 2 {
+            return None;
+        }
+        // Si el lente guardado no existe en este teléfono, se usa el principal.
+        let current = lenses.iter().position(|(id, _)| Some(*id) == self.options.lens).unwrap_or(0);
+        let mut controls = row![].spacing(4);
+        for (position, (id, _)) in lenses.iter().enumerate() {
+            let (label, lens) = match position {
+                0 => ("Principal".to_string(), None),
+                // El mismo número que muestra «ixtli lentes».
+                _ => (id.to_string(), Some(*id)),
+            };
+            controls = controls.push(choice_button(text(label).size(13).into(), position == current, Message::Lens(lens)));
+        }
+        let detail = match lenses[current].1.megapixels() {
+            Some(mp) => format!("Sensor de {mp} MP. Prueba cuál es el gran angular."),
+            None => "Prueba cuál es el gran angular.".to_string(),
+        };
+        Some(
+            row![
+                column![text("Lente").size(15), text(detail).size(12).color(MUTED)]
+                    .spacing(2)
+                    .width(Length::Fill),
+                inset(controls),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into(),
+        )
     }
 
     /// Modo ahorro. Encendido, dice qué tamaño se está usando.
