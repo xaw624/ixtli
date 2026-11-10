@@ -2,6 +2,8 @@
 
 Usa tu celular Android como **cámara web y micrófono** en Linux, con un clic.
 
+[English](README.en.md)
+
 *Ixtli* significa «rostro» u «ojo» en náhuatl.
 
 Ixtli no reinventa nada: automatiza [scrcpy](https://github.com/Genymobile/scrcpy),
@@ -45,6 +47,31 @@ En otras distribuciones los paquetes se llaman parecido (`scrcpy`, `android-tool
 
 ## Instalación
 
+### Con el paquete .deb (Debian y Ubuntu)
+
+Descarga `ixtli_X.Y.Z_amd64.deb` de la página de
+[Releases](https://github.com/xaw624/ixtli/releases) e instálalo:
+
+```bash
+sudo apt install ./ixtli_*.deb
+```
+
+El paquete instala también lo que Ixtli necesita y deja la cámara virtual cargada
+desde el arranque, así que no pide contraseña al encender.
+
+En Debian 13, `scrcpy` 3 está en `trixie-backports` (sección `contrib`). Si `apt` dice
+que no encuentra `scrcpy`, activa ese repositorio y repite la instalación:
+
+```bash
+echo "deb http://deb.debian.org/debian trixie-backports main contrib" | sudo tee /etc/apt/sources.list.d/backports.list
+```
+
+```bash
+sudo apt update
+```
+
+### Compilando
+
 Necesitas Rust 1.85 o más nuevo (`sudo apt install cargo`).
 
 ```bash
@@ -54,7 +81,8 @@ cd ixtli
 ```
 
 El script compila Ixtli y lo instala solo para tu usuario, sin sudo: el programa queda
-en `~/.local/bin/ixtli` y aparece como **Ixtli** en el menú de aplicaciones.
+en `~/.local/bin/ixtli` y aparece como **Ixtli** en el menú de aplicaciones. Para armar
+tú mismo el `.deb`, ejecuta `./empaquetar.sh`.
 
 ## Uso
 
@@ -84,7 +112,7 @@ segundos.
 
 ### Sin cable (WiFi)
 
-El teléfono y la computadora deben estar en la **misma red WiFi**. Hay dos formas:
+El teléfono y la computadora deben estar en la **misma red WiFi**. Hay tres formas:
 
 **Con código QR (sin cable nunca):**
 

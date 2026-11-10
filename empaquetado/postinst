@@ -1,0 +1,6 @@
+#!/bin/sh
+# Activa la cámara virtual de una vez, sin esperar al siguiente arranque.
+set -e
+if [ "$1" = configure ] && [ ! -d /sys/module/v4l2loopback ]; then
+    modprobe v4l2loopback 2>/dev/null || true
+fi

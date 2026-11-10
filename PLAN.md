@@ -25,7 +25,8 @@ Cómo está hecho:
   `sys.rs` (teléfono, adb y cámara virtual), `pairing.rs` (vincular con QR),
   `audio.rs` (micrófono virtual), `preview.rs` (lee la cámara virtual), `gui.rs`
   y `cli.rs`.
-- Se instala con `./instalar.sh` en `~/.local/bin/ixtli`.
+- Se instala con `./instalar.sh` en `~/.local/bin/ixtli`, o con el `.deb` que arma
+  `./empaquetar.sh`.
 
 Cosas que conviene saber:
 
@@ -85,27 +86,35 @@ Objetivo: dejar el WiFi probado con teléfonos reales y guardado en git.
 Listo cuando: los dos teléfonos se conectan sin cable desde la ventana y, si se pierde
 la red, Ixtli avisa con un mensaje claro.
 
-## Fase 1. Instalador `.deb` y publicaciones
+## Fase 1. Instalador `.deb` y publicaciones (hecho; falta publicarlo)
 
 Objetivo: instalar Ixtli sin tener Rust.
 
-- `cargo-deb` con `[package.metadata.deb]` en `Cargo.toml`: dependencias `scrcpy`,
-  `adb`, `v4l2loopback-dkms` y `pulseaudio-utils`; instala el binario,
-  `ixtli.desktop` y el icono.
+Hecho:
+
+- `./empaquetar.sh` arma `target/deb/ixtli_VERSION_amd64.deb` con `dpkg-deb` (no usa
+  `cargo-deb`, para no depender de un Rust más nuevo). Depende de `scrcpy (>= 3.0)`,
+  `adb`, `v4l2loopback-dkms` y `pulseaudio-utils`.
 - El paquete instala `/usr/lib/modules-load.d/ixtli.conf` y
-  `/usr/lib/modprobe.d/ixtli.conf` para cargar v4l2loopback al arrancar con la
-  etiqueta «Ixtli». Así ya no se pide contraseña en cada arranque.
-- GitHub Actions: compilar en un contenedor de Debian 13 (cargo 1.85), correr las
-  pruebas y, al crear una etiqueta `v*`, publicar el binario y el `.deb` en GitHub
-  Releases. Este mismo flujo se amplía en la fase 4 para compilar el de Windows.
-- README en inglés.
-- Probar la instalación en un Debian limpio (contenedor o máquina virtual) y, si se
-  puede, en otra distribución.
+  `/usr/lib/modprobe.d/ixtli.conf` (archivos en `empaquetado/`): la cámara virtual se
+  carga al arrancar con la etiqueta «Ixtli» y ya no se pide contraseña.
+- `.github/workflows/publicar.yml`: compila y prueba en un contenedor de Debian 13,
+  arma el `.deb`, lo instala en otro Debian 13 limpio y, con una etiqueta `v*`, lo
+  publica en GitHub Releases junto con el binario suelto.
+- README en inglés (`README.en.md`).
+- Versión 0.2.0.
 
-Listo cuando: en un Debian limpio se instala con un solo archivo y abre desde el menú.
+Falta:
 
-Riesgo: Ubuntu 24.04 trae scrcpy 1.25, que no sirve (se necesita 3.0). Se resuelve
-solo en la fase 3, cuando Ixtli lleve su propio servidor de scrcpy.
+- Subir los cambios (`git push`) y ver que el flujo pase en GitHub: ahí se prueba la
+  instalación en un Debian limpio, que en esta computadora no se pudo probar.
+- Crear la etiqueta `v0.2.0` para publicar la primera versión.
+- Instalar el `.deb` en esta computadora y reiniciar, para ver que la cámara «Ixtli»
+  aparece sola. Aquí ya hay una cámara virtual llamada «Celular», cargada a mano.
+- Probar en otra distribución (Ubuntu 24.04 trae scrcpy 1.25, que no sirve).
+
+Cosas que conviene saber: en Debian 13, `scrcpy` 3 solo está en `trixie-backports`
+(sección `contrib`); el README explica cómo activarlo.
 
 ## Fase 2. Medición y ahorro rápido
 
