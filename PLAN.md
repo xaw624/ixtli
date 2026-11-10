@@ -2,6 +2,48 @@
 
 Notas para retomar el proyecto en otra sesión. Actualizado el 10 de noviembre de 2026.
 
+## Para retomar (estado al 10 de noviembre de 2026)
+
+Dónde quedó el trabajo:
+
+- **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
+- **Fase 2 empezada:** existe `ixtli medir`, probado solo con simuladores.
+- El commit `f8dc805` (`ixtli medir`) y los posteriores están **sin subir** a GitHub.
+
+Lo siguiente, en orden:
+
+1. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
+   usuario; por teléfono son cuatro corridas de `ixtli medir 15` (720p y 1080p, por
+   WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS. La batería solo se
+   ve por WiFi, porque por cable el teléfono se carga.
+2. **Seguir la fase 2:** modo ahorro, pantalla apagada, vista previa ligera, batería a
+   la vista, elegir lente y sondeos más lentos. Se puede programar sin la tabla, pero
+   sin ella no se puede demostrar cuánto ahorra cada cambio.
+3. Después, la fase 3 (motor de video propio).
+
+Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inestable):
+
+- WiFi en vivo: desconectar el cable y apagar el WiFi del teléfono con la cámara
+  encendida; cerrar y reabrir Ixtli sin cable.
+- «Vincular con QR» en la red local. Solo se probó el código de 6 dígitos, por VPN
+  (Tailscale), y funcionó.
+- Instalar el `.deb` en la computadora del usuario y reiniciar, para ver que la cámara
+  «Ixtli» aparece sola. Hoy hay una cámara virtual «Celular» cargada a mano.
+- El botón «Activar» después de reiniciar la computadora.
+- La comprobación manual de Windows 10 (paso W0 de la fase 4), que no necesita código.
+
+Cómo se probó sin teléfono: con un `adb` y un `scrcpy` simulados (scripts de shell
+puestos antes en el `PATH`, con `XDG_CONFIG_HOME` apuntando a una carpeta temporal).
+No están en el repositorio; hay que volver a escribirlos si hacen falta.
+
+Cosas del entorno:
+
+- La ventana instalada es `~/.local/bin/ixtli`. Después de cambiar código hay que
+  correr `./instalar.sh` y reabrir Ixtli, o se sigue viendo la versión vieja.
+- Para subir cambios a `.github/workflows/`, `gh` necesita el permiso `workflow`
+  (ya dado en esta computadora).
+- Publicar una versión: subir la etiqueta `vX.Y.Z`; el flujo arma y publica el `.deb`.
+
 ## Dónde está hoy
 
 Funciona en Debian 13 con KDE/Wayland, probado con un Galaxy A57 (Android 16) y un
