@@ -7,9 +7,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::audio;
-use crate::config::{self, Facing, Quality, Remembered, Rotation};
+use crate::config::{self, Facing, Options, Quality, Remembered, Rotation};
 use crate::engine::{Engine, Phase};
 use crate::gui;
+use crate::measure;
 use crate::pairing::{self, Pairing, Progress};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, Tool};
 
@@ -24,6 +25,9 @@ Uso:
   ixtli vista                Abre una ventana con la imagen de la cámara.
   ixtli wifi                 Pasa a WiFi el teléfono conectado por USB y lo recuerda.
   ixtli wifi olvidar         Olvida el teléfono y lo desconecta de la red.
+  ixtli medir [MINUTOS] [opciones]
+                             Enciende la cámara y mide cada minuto la batería del teléfono
+                             y la CPU y memoria en la computadora (10 minutos si no dices).
   ixtli vincular             Vincula el teléfono sin cable con un código QR.
   ixtli vincular IP:PUERTO CÓDIGO
                              Vincula con el código de 6 dígitos que muestra el teléfono
@@ -59,6 +63,7 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         },
         Some("encender" | "start") => start(&args[1..]),
+        Some("medir" | "measure") => measure_run(&args[1..]),
         Some("vincular" | "pair") => pair(&args[1..]),
         Some("wifi") => match args.get(1).map(String::as_str) {
             None => wifi(),
@@ -315,7 +320,8 @@ fn pair(args: &[String]) -> ExitCode {
     }
 }
 
-fn start(flags: &[String]) -> ExitCode {
+/// Lee las opciones de «encender» sobre las guardadas en la ventana.
+fn read_options(flags: &[String]) -> Result<Options, ExitCode> {
     let mut options = config::load();
     for flag in flags {
         match flag.as_str() {
@@ -329,7 +335,7 @@ fn start(flags: &[String]) -> ExitCode {
                 Ok(degrees) if (-180..=180).contains(&degrees) => options.angle = degrees,
                 _ => {
                     eprintln!("El ángulo debe ser un número entre -180 y 180.");
-                    return ExitCode::from(2);
+                    return Err(ExitCode::from(2));
                 }
             },
             "--micro" => options.mic = true,
@@ -341,10 +347,182 @@ fn start(flags: &[String]) -> ExitCode {
             "--giro=270" => options.rotation = Rotation::Fixed(270),
             other => {
                 eprintln!("No conozco la opción «{other}».\n\n{HELP}");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             }
         }
     }
+    Ok(options)
+}
+
+/// `ixtli medir`: enciende la cámara y anota cada minuto la batería y la
+/// temperatura del teléfono, y la CPU y la memoria que usa Ixtli.
+fn measure_run(args: &[String]) -> ExitCode {
+    let mut minutes = 10.0_f64;
+    let mut every = Duration::from_secs(60);
+    let mut flags = Vec::new();
+    for arg in args {
+        if let Ok(value) = arg.parse::<f64>() {
+            minutes = value;
+        } else if let Some(seconds) = arg.strip_prefix("--cada=").and_then(|v| v.parse::<u64>().ok()) {
+            every = Duration::from_secs(seconds.max(1));
+        } else {
+            flags.push(arg.clone());
+        }
+    }
+    if !(minutes > 0.0 && minutes <= 600.0) {
+        eprintln!("Los minutos deben ser un número entre 1 y 600.");
+        return ExitCode::from(2);
+    }
+    let options = match read_options(&flags) {
+        Ok(options) => options,
+        Err(code) => return code,
+    };
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = interrupted.clone();
+        let _ = ctrlc::set_handler(move || interrupted.store(true, Ordering::SeqCst));
+    }
+    let engine = Engine::spawn();
+    engine.start(options);
+    println!("Conectando con el teléfono...");
+    let live = loop {
+        thread::sleep(Duration::from_millis(150));
+        let state = engine.snapshot();
+        match state.phase {
+            Phase::Live => break true,
+            Phase::Off => {
+                eprintln!("{}", state.error.unwrap_or_else(|| "No se pudo encender la cámara.".into()));
+                break false;
+            }
+            Phase::Starting if interrupted.load(Ordering::SeqCst) => break false,
+            Phase::Starting => {}
+        }
+    };
+    let Some((serial, model, link)) = live
+        .then(sys::phone)
+        .and_then(|phone| match phone {
+            Phone::Ready { serial, model, link } => Some((serial, model, link)),
+            _ => None,
+        })
+    else {
+        engine.shutdown();
+        return ExitCode::FAILURE;
+    };
+
+    let setup = format!(
+        "{} {}{}",
+        match options.facing {
+            Facing::Front => "frontal",
+            Facing::Back => "trasera",
+        },
+        match options.quality {
+            Quality::Hd => "720p",
+            Quality::FullHd => "1080p",
+        },
+        if options.mic { " + micro" } else { "" },
+    );
+    let by = match link {
+        Link::Usb => "USB",
+        Link::Wifi => "WiFi",
+    };
+    println!("Midiendo {minutes} min: {model}, {setup}, por {by}. Ctrl+C para terminar antes.\n");
+    println!("  min  batería    temp  carga      CPU  memoria");
+
+    let started = std::time::Instant::now();
+    let mut samples: Vec<measure::Sample> = Vec::new();
+    let mut last = (started, measure::usage());
+    let mut problem = None;
+    loop {
+        let now = std::time::Instant::now();
+        let usage = measure::usage();
+        let elapsed = now.duration_since(last.0).as_secs_f64();
+        let sample = measure::Sample {
+            minute: now.duration_since(started).as_secs_f64() / 60.0,
+            battery: measure::battery(&serial),
+            cpu: (elapsed > 0.5).then(|| (usage.cpu_seconds - last.1.cpu_seconds).max(0.0) / elapsed * 100.0),
+            memory_mb: usage.memory_mb,
+        };
+        last = (now, usage);
+        let cpu = sample.cpu.map(|cpu| format!("{cpu:5.1} %")).unwrap_or_else(|| "     --".into());
+        match sample.battery {
+            Some(battery) => println!(
+                "{:5.1}    {:3} %  {:4.1}°  {:5}  {cpu}  {:4.0} MB",
+                sample.minute,
+                battery.level,
+                battery.temperature,
+                if battery.charging { "sí" } else { "no" },
+                sample.memory_mb,
+            ),
+            None => println!("{:5.1}      -- %    --°     --  {cpu}  {:4.0} MB", sample.minute, sample.memory_mb),
+        }
+        samples.push(sample);
+        if sample.minute >= minutes {
+            break;
+        }
+        // Espera a la siguiente muestra, atento a Ctrl+C y a que la cámara siga.
+        let next = now + every.min(Duration::from_secs_f64((minutes - sample.minute).max(0.01) * 60.0));
+        while std::time::Instant::now() < next {
+            thread::sleep(Duration::from_millis(150));
+            if interrupted.load(Ordering::SeqCst) {
+                break;
+            }
+            let state = engine.snapshot();
+            if state.phase == Phase::Off {
+                problem = Some(state.error.unwrap_or_else(|| "La cámara se apagó.".into()));
+                break;
+            }
+        }
+        if interrupted.load(Ordering::SeqCst) || problem.is_some() {
+            break;
+        }
+    }
+    engine.shutdown();
+    if let Some(problem) = &problem {
+        eprintln!("\n{problem}");
+    }
+
+    let Some(summary) = measure::summarize(&samples) else {
+        eprintln!("\nNo hubo tiempo para medir nada.");
+        return ExitCode::FAILURE;
+    };
+    let signed = |value: f64| format!("{value:+.1}");
+    let battery = summary.battery_per_hour.map(signed).unwrap_or_else(|| "--".into());
+    let temperature = summary
+        .temperature_change
+        .map(|change| signed(f64::from(change)))
+        .unwrap_or_else(|| "--".into());
+    println!(
+        "\nResumen de {:.1} min: batería {battery} puntos por hora, temperatura {temperature}°, CPU media {:.1} % de un núcleo, memoria máxima {:.0} MB.",
+        summary.minutes, summary.cpu_average, summary.memory_max
+    );
+    if summary.charging {
+        println!("El teléfono se estuvo cargando, así que la batería no refleja el gasto. Mide por WiFi para verlo.");
+    }
+    if summary.minutes < 10.0 {
+        println!("Con menos de 10 minutos la batería casi no cambia; para comparar, mide 15 o más.");
+    }
+    let date = sys::run("date", &["+%F"]).map(|d| d.trim().to_string()).unwrap_or_default();
+    println!("\nFila para docs/mediciones.md:");
+    println!(
+        "| {date} | {model} | {by}{} | {setup} | {:.1} | {battery} | {temperature} | {:.1} | {:.0} |",
+        if summary.charging { " (cargando)" } else { "" },
+        summary.minutes,
+        summary.cpu_average,
+        summary.memory_max
+    );
+    if problem.is_some() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn start(flags: &[String]) -> ExitCode {
+    let options = match read_options(flags) {
+        Ok(options) => options,
+        Err(code) => return code,
+    };
 
     let interrupted = Arc::new(AtomicBool::new(false));
     {

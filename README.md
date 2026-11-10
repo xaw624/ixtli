@@ -165,6 +165,7 @@ ixtli encender --giro=90           # imagen girada 90°
 ixtli encender --espejo --angulo=15  # efecto espejo y 15° extra
 ixtli encender --sin-micro         # solo la cámara
 ixtli vista                        # ventana con la imagen de la cámara
+ixtli medir 15                     # mide 15 min de batería, CPU y memoria
 ixtli wifi                         # pasa a WiFi el teléfono conectado por USB
 ixtli wifi olvidar                 # deja de usar el teléfono sin cable
 ixtli vincular                     # vincula sin cable con un código QR en la terminal

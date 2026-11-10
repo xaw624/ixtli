@@ -165,6 +165,7 @@ ixtli encender --giro=90           # image rotated 90°
 ixtli encender --espejo --angulo=15  # mirror effect and 15° extra
 ixtli encender --sin-micro         # camera only
 ixtli vista                        # window with the camera image
+ixtli medir 15                     # measure battery, CPU and memory for 15 min
 ixtli wifi                         # move the USB-connected phone to WiFi
 ixtli wifi olvidar                 # stop using the phone without a cable
 ixtli vincular                     # pair without a cable, QR code in the terminal

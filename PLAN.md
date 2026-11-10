@@ -23,8 +23,8 @@ Cómo está hecho:
 - Por debajo usa scrcpy 3.0 o más nuevo, v4l2loopback y `pactl`.
 - Módulos: `engine.rs` (hilo que maneja la sesión), `session.rs` (scrcpy),
   `sys.rs` (teléfono, adb y cámara virtual), `pairing.rs` (vincular con QR),
-  `audio.rs` (micrófono virtual), `preview.rs` (lee la cámara virtual), `gui.rs`
-  y `cli.rs`.
+  `audio.rs` (micrófono virtual), `preview.rs` (lee la cámara virtual),
+  `measure.rs` (mediciones), `gui.rs` y `cli.rs`.
 - Se instala con `./instalar.sh` en `~/.local/bin/ixtli`, o con el `.deb` que arma
   `./empaquetar.sh`.
 
@@ -122,10 +122,11 @@ Cosas que conviene saber: en Debian 13, `scrcpy` 3 solo está en `trixie-backpor
 Objetivo: saber cuánto gasta Ixtli y bajar ese gasto con cambios que no necesitan el
 motor propio.
 
-- **Medir primero.** Un comando `ixtli medir` que, con la cámara encendida, anote
-  cada minuto: batería y temperatura del teléfono (`adb shell dumpsys battery`), y
-  CPU y memoria de Ixtli y de scrcpy en la computadora. Guardar la tabla base (720p y
-  1080p, cable y WiFi, los dos teléfonos) en `docs/mediciones.md`.
+- **Medir primero.** Hecho: `ixtli medir [MINUTOS] [opciones]` (módulo `measure.rs`)
+  enciende la cámara y anota cada minuto la batería y la temperatura del teléfono
+  (`adb shell dumpsys battery`) y la CPU y memoria de Ixtli, scrcpy y adb. Probado
+  solo con simuladores. **Falta llenar la tabla base** de `docs/mediciones.md` con los
+  teléfonos reales (720p y 1080p, cable y WiFi) antes de tocar nada del ahorro.
 - **Modo ahorro:** un botón que baja a 480p, 15 o 24 cuadros por segundo y menos tasa
   de bits (`--camera-size`, `--camera-fps`, `--video-bit-rate`). Los tamaños válidos
   se leen de `scrcpy --list-camera-sizes`.

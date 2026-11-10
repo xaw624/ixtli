@@ -10,6 +10,7 @@ mod config;
 mod engine;
 mod pairing;
 mod gui;
+mod measure;
 mod preview;
 mod session;
 mod sys;
