@@ -15,6 +15,7 @@ cualquier otro programa.
 - No hay que instalar ninguna app en el teléfono.
 - Cámara frontal o trasera, en 720p o 1080p.
 - Modo ahorro (cerca de 480p y 15 cuadros por segundo) para gastar menos batería.
+- Batería del teléfono en la ventana, con un aviso cuando baja de 20 %.
 - Giro de la imagen: automático según la posición del teléfono, en cuartos de vuelta,
   a un ángulo personalizado y con efecto espejo.
 - Vista previa dentro de la ventana, que se puede desacoplar a una ventana aparte.

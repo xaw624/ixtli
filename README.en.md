@@ -14,6 +14,7 @@ microphone you can pick in Meet, Zoom, Teams, OBS or any other program.
 - No app to install on the phone.
 - Front or back camera, in 720p or 1080p.
 - Power saving mode (about 480p at 15 frames per second) to use less battery.
+- The phone's battery level in the window, with a warning below 20 %.
 - Image rotation: automatic (follows the phone), quarter turns, a custom angle and a
   mirror effect.
 - Preview inside the window, which can be detached into its own window.

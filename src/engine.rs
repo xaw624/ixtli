@@ -8,12 +8,17 @@ use std::time::{Duration, Instant};
 
 use crate::audio;
 use crate::config::{self, Capture, Options, Remembered, Rotation};
+use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
 use crate::session::{Session, LOST_WIFI};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, VirtualCam};
 
 /// Cada cuánto se intenta reconectar sin cable el teléfono recordado.
 const RECONNECT_EVERY: Duration = Duration::from_secs(10);
+
+/// Cada cuánto se lee la batería del teléfono. Cada lectura abre un proceso
+/// en el teléfono, y la batería cambia despacio.
+const BATTERY_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -36,6 +41,8 @@ pub struct Snapshot {
     pub mic: bool,
     /// Lo que se le pidió a la cámara del teléfono en la sesión en vivo.
     pub capture: Option<Capture>,
+    /// La batería del teléfono conectado, si se pudo leer.
+    pub battery: Option<Battery>,
     /// Último problema, ya explicado para el usuario.
     pub error: Option<String>,
     pub wifi: WifiStatus,
@@ -184,6 +191,8 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     let mut remembered = shared.lock().unwrap().wifi.remembered.clone();
     let mut last_reconnect: Option<Instant> = None;
     let mut pairing: Option<Pairing> = None;
+    // A qué teléfono y cuándo se le leyó la batería por última vez.
+    let mut battery_read: Option<(String, Instant)> = None;
 
     loop {
         // --- Revisar el sistema -------------------------------------------
@@ -313,6 +322,30 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             }
         }
         update(&shared, |state| state.checked = true);
+
+        // --- Batería del teléfono -----------------------------------------
+        let serial = match &shared.lock().unwrap().phone {
+            Phone::Ready { serial, .. } => Some(serial.clone()),
+            _ => None,
+        };
+        match serial {
+            Some(serial) => {
+                // Se lee al aparecer el teléfono (o al cambiar de cable a WiFi)
+                // y después cada minuto.
+                let due = battery_read
+                    .as_ref()
+                    .is_none_or(|(read, at)| *read != serial || at.elapsed() >= BATTERY_EVERY);
+                if due {
+                    let battery = measure::battery(&serial);
+                    update(&shared, |state| state.battery = battery);
+                    battery_read = Some((serial, Instant::now()));
+                }
+            }
+            None => {
+                battery_read = None;
+                update(&shared, |state| state.battery = None);
+            }
+        }
 
         // --- Esperar la siguiente orden -----------------------------------
         let phase = shared.lock().unwrap().phase;

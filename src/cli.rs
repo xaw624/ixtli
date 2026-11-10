@@ -548,6 +548,7 @@ fn start(flags: &[String]) -> ExitCode {
     println!("Conectando con el teléfono...");
 
     let mut announced = false;
+    let mut warned = false;
     let code = loop {
         thread::sleep(Duration::from_millis(150));
         if interrupted.load(Ordering::SeqCst) {
@@ -564,6 +565,12 @@ fn start(flags: &[String]) -> ExitCode {
                     println!("Micrófono: «{}».", audio::MIC_LABEL);
                 }
                 println!("Presiona Ctrl+C para apagar.");
+            }
+            // Se avisa una vez por sesión si al teléfono le queda poca batería.
+            Phase::Live if !warned && state.battery.is_some_and(|b| b.low()) => {
+                warned = true;
+                let level = state.battery.map(|b| b.level).unwrap_or_default();
+                println!("Al teléfono le queda {level} % de batería. Conéctalo con el cable USB para que se cargue.");
             }
             Phase::Off => {
                 break match state.error {

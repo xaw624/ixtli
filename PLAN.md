@@ -7,10 +7,11 @@ Notas para retomar el proyecto en otra sesión. Actualizado el 10 de noviembre d
 Dónde quedó el trabajo:
 
 - **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
-- **Fase 2 empezada:** existe `ixtli medir` y el **modo ahorro** (interruptor en la
-  ventana y `--ahorro` en la terminal). Los dos se probaron solo con simuladores.
-- Todo hasta `036c68b` está subido a GitHub. El commit del modo ahorro es **local**,
-  sin subir.
+- **Fase 2 empezada:** existen `ixtli medir`, el **modo ahorro** (interruptor en la
+  ventana y `--ahorro` en la terminal) y la **batería a la vista**. Los tres se
+  probaron solo con simuladores.
+- Todo hasta `036c68b` está subido a GitHub. Los commits del modo ahorro y de la
+  batería son **locales**, sin subir.
 
 Lo siguiente, en orden:
 
@@ -20,8 +21,8 @@ Lo siguiente, en orden:
    WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS. La batería solo se
    ve por WiFi, porque por cable el teléfono se carga. Después, `ixtli medir 15
    --ahorro` por WiFi, en la tabla del modo ahorro.
-3. **Seguir la fase 2**, en este orden: batería a la vista, elegir lente y pantalla
-   apagada (las tres son opcionales y no cambian lo que pasa por defecto, así que se
+3. **Seguir la fase 2**, en este orden: elegir lente y pantalla apagada (las dos son
+   opcionales y no cambian lo que pasa por defecto, así que se
    pueden programar antes de la tabla). Los sondeos más lentos y la vista previa
    ligera sí cambian el gasto normal: van después de llenar la tabla base, para ver
    la diferencia.
@@ -37,6 +38,12 @@ Pruebas del modo ahorro que faltan con el teléfono real:
 - Prender y apagar el modo ahorro con la cámara en uso en Meet: cambia el tamaño de
   la cámara virtual, igual que al girar.
 - Cómo se ve el interruptor nuevo en la ventana (no se revisó a la vista).
+
+Pruebas de la batería que faltan con el teléfono real:
+
+- Que la ventana muestre el nivel bajo «Teléfono» («Batería: 87 %, cargando.») en los
+  dos teléfonos, por cable y por WiFi. No se revisó a la vista.
+- El aviso en ámbar bajo el estado cuando baja de 20 % por WiFi.
 
 Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inestable):
 
@@ -72,6 +79,7 @@ moto g34 5G:
 - Vista previa incrustada en la ventana y desacoplable (`ixtli vista`).
 - Modo terminal: `ixtli estado`, `ixtli encender`, `ixtli --encender`.
 - Modo ahorro (cerca de 480p, 15 cuadros/s, 2 Mb/s), probado solo con simuladores.
+- Batería del teléfono en la ventana, con aviso bajo 20 %; probado solo con simuladores.
 - **WiFi:** «Conectar por WiFi» con el cable una vez
   (`adb tcpip`), probado con el moto g34; y «Vincular con QR» sin cable
   (`adb pair` + mDNS, módulo `pairing.rs`), probado solo con un adb simulado.
@@ -202,8 +210,12 @@ motor propio.
   el giro pasa a fijo.
 - **Vista previa ligera:** menos cuadros por segundo y se detiene sola cuando la
   ventana está minimizada o tapada.
-- **Batería a la vista:** nivel de batería del teléfono en la ventana y un aviso para
-  conectar el cable cuando baje de 20 %.
+- **Batería a la vista.** Hecho, probado solo con simuladores. El motor lee
+  `dumpsys battery` al aparecer el teléfono y luego cada minuto (`BATTERY_EVERY` en
+  `engine.rs`), con la cámara encendida o apagada. La ventana muestra el nivel en el
+  renglón «Teléfono». Debajo de 20 % y sin carga, el renglón se pone ámbar y aparece
+  un aviso bajo el estado: por WiFi sugiere el cable; por USB, un cargador (hay
+  cables y puertos que no cargan). `ixtli encender` avisa una vez por sesión.
 - **Elegir lente:** lista de cámaras del teléfono (`scrcpy --list-cameras`,
   `--camera-id`) para usar el gran angular u otro lente.
 - **Sondeos más lentos:** hoy se pregunta el giro cada 1.5 s y, por WiFi, se hace un

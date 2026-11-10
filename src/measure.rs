@@ -17,6 +17,16 @@ pub struct Battery {
     pub charging: bool,
 }
 
+/// Debajo de este nivel, sin carga, Ixtli sugiere conectar el cable.
+pub const LOW_BATTERY: u8 = 20;
+
+impl Battery {
+    /// Queda poca batería y no se está cargando.
+    pub fn low(&self) -> bool {
+        self.level < LOW_BATTERY && !self.charging
+    }
+}
+
 pub fn battery(serial: &str) -> Option<Battery> {
     let output = sys::run_for(
         "adb",
@@ -155,6 +165,14 @@ pub fn summarize(samples: &[Sample]) -> Option<Summary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_battery() {
+        let battery = |level, charging| Battery { level, temperature: 30.0, charging };
+        assert!(battery(19, false).low());
+        assert!(!battery(20, false).low());
+        assert!(!battery(5, true).low());
+    }
 
     #[test]
     fn battery_dump() {

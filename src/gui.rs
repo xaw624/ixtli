@@ -16,6 +16,7 @@ use iced::{
 use crate::audio;
 use crate::config::{self, Facing, Options, Quality, Rotation};
 use crate::engine::{Engine, Phase, Snapshot};
+use crate::measure::Battery;
 use crate::pairing::{self, Progress};
 use crate::preview::Preview;
 use crate::sys::{self, Link, Phone, Tool};
@@ -511,19 +512,30 @@ impl App {
             },
         };
 
-        let body = row![
-            dot(color, 14.0),
-            column![
-                text(title).size(20).font(BOLD),
-                text(detail).size(13).color(MUTED),
-            ]
-            .spacing(4)
-            .width(Length::Fill),
+        let mut words = column![
+            text(title).size(20).font(BOLD),
+            text(detail).size(13).color(MUTED),
         ]
+        .spacing(4)
+        .width(Length::Fill);
+        if let Some(warning) = self.battery_warning() {
+            words = words.push(text(warning).size(13).color(AMBER));
+        }
+        let body = row![dot(color, 14.0), words]
         .spacing(14)
         .align_y(Alignment::Center);
 
         card(body)
+    }
+
+    /// Aviso de batería baja, solo si el teléfono no se está cargando.
+    fn battery_warning(&self) -> Option<String> {
+        let battery = self.state.battery.filter(Battery::low)?;
+        let Phone::Ready { link, .. } = &self.state.phone else { return None };
+        Some(match link {
+            Link::Wifi => format!("Al teléfono le queda {} % de batería. Conéctalo con el cable USB para que se cargue.", battery.level),
+            Link::Usb => format!("Al teléfono le queda {} % de batería y este cable no lo está cargando. Conéctalo a un cargador.", battery.level),
+        })
     }
 
     /// La imagen de la cámara, o el aviso de que está en otra ventana.
@@ -572,7 +584,19 @@ impl App {
                     Link::Usb => "por USB",
                     Link::Wifi => "por WiFi",
                 };
-                requirement(Level::Good, "Teléfono", format!("{model} conectado {by}."), None)
+                let mut detail = format!("{model} conectado {by}.");
+                let mut level = Level::Good;
+                if let Some(battery) = &state.battery {
+                    detail.push_str(&format!(" Batería: {} %", battery.level));
+                    if battery.charging {
+                        detail.push_str(", cargando");
+                    }
+                    detail.push('.');
+                    if battery.low() {
+                        level = Level::Pending;
+                    }
+                }
+                requirement(level, "Teléfono", detail, None)
             }
             (Phone::Missing, Some(remembered)) => requirement(
                 Level::Pending,
