@@ -35,6 +35,72 @@ impl Quality {
     }
 }
 
+/// Lo que se le pide a la cámara del teléfono en una sesión.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    /// Para `scrcpy --camera-size`, por ejemplo `1280x720`.
+    pub size: String,
+    /// Cuadros por segundo (`--camera-fps`).
+    pub fps: u16,
+    /// Tasa de bits (`--video-bit-rate`); `None` deja la de scrcpy (8 Mb/s).
+    pub bit_rate: Option<&'static str>,
+}
+
+impl Capture {
+    /// Para mostrarla: «854x480, 15 cuadros/s, 2 Mb/s».
+    pub fn describe(&self) -> String {
+        let mut text = format!("{}, {} cuadros/s", self.size, self.fps);
+        if let Some(rate) = self.bit_rate {
+            text.push_str(&format!(", {} Mb/s", rate.trim_end_matches('M')));
+        }
+        text
+    }
+}
+
+/// Tasa de bits del modo ahorro. scrcpy usa 8 Mb/s, que sobra para 480p.
+const SAVER_BIT_RATE: &str = "2M";
+
+impl Options {
+    /// Qué pedirle a la cámara. Sin modo ahorro es la calidad elegida a 30
+    /// cuadros/s. Con modo ahorro se buscan en `cameras` (la lista del
+    /// teléfono) un tamaño cercano a 480p y 15 o 24 cuadros/s; si no hay
+    /// lista, se queda en 720p, que todos los teléfonos aceptan, y solo
+    /// baja la tasa de bits.
+    pub fn capture(&self, cameras: Option<&[crate::sys::PhoneCamera]>) -> Capture {
+        if !self.saver {
+            return Capture { size: self.quality.size().into(), fps: 30, bit_rate: None };
+        }
+        // scrcpy usa la primera cámara que mira hacia el lado pedido.
+        let camera = cameras.and_then(|list| list.iter().find(|c| c.facing == Some(self.facing)));
+        let size = camera
+            .and_then(|camera| saver_size(&camera.sizes))
+            .map(|(w, h)| format!("{w}x{h}"))
+            .unwrap_or_else(|| Quality::Hd.size().into());
+        let fps = camera
+            .and_then(|camera| [15, 24].into_iter().find(|fps| camera.fps.contains(fps)))
+            .unwrap_or(30);
+        Capture { size, fps, bit_rate: Some(SAVER_BIT_RATE) }
+    }
+}
+
+/// El tamaño del modo ahorro: el más cercano a 480 de alto, de preferencia
+/// panorámico (16:9, como 720p) y siempre más chico que 720p.
+fn saver_size(sizes: &[(u32, u32)]) -> Option<(u32, u32)> {
+    let short = |&(w, h): &(u32, u32)| w.min(h);
+    let wide = |&(w, h): &(u32, u32)| {
+        let ratio = f64::from(w.max(h)) / f64::from(w.min(h).max(1));
+        (ratio - 16.0 / 9.0).abs() <= 16.0 / 9.0 * 0.1
+    };
+    let fits = |size: &&(u32, u32)| (360..720).contains(&short(size));
+    let closest = |list: Vec<&(u32, u32)>| {
+        list.into_iter()
+            .min_by_key(|size| (short(size).abs_diff(480), std::cmp::Reverse(size.0 * size.1)))
+            .copied()
+    };
+    closest(sizes.iter().filter(fits).filter(|size| wide(size)).collect())
+        .or_else(|| closest(sizes.iter().filter(fits).collect()))
+}
+
 /// Cómo girar la imagen de la cámara.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rotation {
@@ -101,6 +167,9 @@ pub struct Options {
     pub mic: bool,
     /// Mostrar la imagen de la cámara dentro de la ventana.
     pub preview: bool,
+    /// Modo ahorro: menos resolución, cuadros y tasa de bits que la calidad
+    /// elegida, para que el teléfono gaste menos batería.
+    pub saver: bool,
 }
 
 impl Default for Options {
@@ -113,6 +182,7 @@ impl Default for Options {
             angle: 0,
             mic: true,
             preview: true,
+            saver: false,
         }
     }
 }
@@ -231,7 +301,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -248,6 +318,7 @@ fn serialize(o: &Options) -> String {
         o.angle,
         yes_no(o.mic),
         yes_no(o.preview),
+        yes_no(o.saver),
     )
 }
 
@@ -269,6 +340,7 @@ fn parse(text: &str) -> Options {
             ("angulo", v) => o.angle = v.parse().map(clamp_angle).unwrap_or(0),
             ("microfono", v) => o.mic = v == "si",
             ("vista_previa", v) => o.preview = v == "si",
+            ("ahorro", v) => o.saver = v == "si",
             _ => {}
         }
     }
@@ -289,6 +361,7 @@ mod tests {
             angle: -15,
             mic: false,
             preview: false,
+            saver: true,
         };
         assert_eq!(parse(&serialize(&o)), o);
         let auto = Options {
@@ -319,6 +392,44 @@ mod tests {
         assert_eq!(parse_phone("vinculado=adb-ZY32-AbCd\ndireccion=-s x\n").unwrap().last, None);
         assert_eq!(parse_phone("wifi=192.168.1.75\n"), None);
         assert_eq!(parse_phone(""), None);
+    }
+
+    fn camera(facing: Facing, fps: &[u16], sizes: &[(u32, u32)]) -> crate::sys::PhoneCamera {
+        crate::sys::PhoneCamera { facing: Some(facing), fps: fps.to_vec(), sizes: sizes.to_vec() }
+    }
+
+    #[test]
+    fn saver_capture() {
+        let normal = Options::default();
+        assert_eq!(
+            normal.capture(None),
+            Capture { size: "1280x720".into(), fps: 30, bit_rate: None }
+        );
+        assert_eq!(Options { quality: Quality::FullHd, ..normal }.capture(None).size, "1920x1080");
+
+        let saver = Options { saver: true, quality: Quality::FullHd, ..normal };
+        // Sin lista del teléfono: 720p, que siempre funciona, con menos tasa de bits.
+        assert_eq!(
+            saver.capture(None),
+            Capture { size: "1280x720".into(), fps: 30, bit_rate: Some("2M") }
+        );
+        let cameras = [
+            camera(Facing::Back, &[15, 24, 30], &[(1920, 1080), (1280, 720), (864, 480), (640, 480), (320, 240)]),
+            camera(Facing::Front, &[24, 30], &[(1920, 1080), (1280, 720), (720, 480), (640, 480), (960, 540)]),
+        ];
+        let back = Options { facing: Facing::Back, ..saver }.capture(Some(&cameras));
+        assert_eq!(back, Capture { size: "864x480".into(), fps: 15, bit_rate: Some("2M") });
+        assert_eq!(back.describe(), "864x480, 15 cuadros/s, 2 Mb/s");
+        // La frontal no tiene 16:9 de 480 de alto: el panorámico más cercano es 960x540.
+        let front = saver.capture(Some(&cameras));
+        assert_eq!((front.size.as_str(), front.fps), ("960x540", 24));
+        // Sin panorámicos chicos, cualquier tamaño cercano a 480p.
+        assert_eq!(saver_size(&[(1280, 720), (640, 480), (352, 288)]), Some((640, 480)));
+        // Nada más chico que 720p: se queda en 720p.
+        let only_big = [camera(Facing::Front, &[30], &[(1920, 1080), (1280, 720)])];
+        let fallback = saver.capture(Some(&only_big));
+        assert_eq!((fallback.size.as_str(), fallback.fps), ("1280x720", 30));
+        assert_eq!(normal.capture(None).describe(), "1280x720, 30 cuadros/s");
     }
 
     #[test]

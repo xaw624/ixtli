@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::audio;
-use crate::config::{self, Options, Remembered, Rotation};
+use crate::config::{self, Capture, Options, Remembered, Rotation};
 use crate::pairing::{self, Pairing, Progress};
 use crate::session::{Session, LOST_WIFI};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, VirtualCam};
@@ -34,6 +34,8 @@ pub struct Snapshot {
     pub phase: Phase,
     /// El micrófono del teléfono está en uso en esta sesión.
     pub mic: bool,
+    /// Lo que se le pidió a la cámara del teléfono en la sesión en vivo.
+    pub capture: Option<Capture>,
     /// Último problema, ya explicado para el usuario.
     pub error: Option<String>,
     pub wifi: WifiStatus,
@@ -247,7 +249,11 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     });
                 }
                 None if running.session.is_live() => {
-                    update(&shared, |state| state.phase = Phase::Live);
+                    let capture = running.capture.clone();
+                    update(&shared, |state| {
+                        state.phase = Phase::Live;
+                        state.capture = Some(capture);
+                    });
                     // Giro automático: si el teléfono cambió de posición, se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
                     if running.turned() {
@@ -491,6 +497,7 @@ struct Running {
     options: Options,
     serial: String,
     link: Link,
+    capture: Capture,
     last_turn_check: Instant,
     last_ping: Instant,
     missed_pings: u8,
@@ -580,14 +587,18 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             Rotation::Fixed(_) => None,
         };
         let degrees = options.rotation.degrees(options.facing, quarters);
-        Session::start(serial, link, &cam, options, degrees)
+        // Solo el modo ahorro necesita saber qué tamaños acepta la cámara.
+        let cameras = options.saver.then(|| sys::phone_cameras(serial)).flatten();
+        let capture = options.capture(cameras.as_deref());
+        Session::start(serial, link, &cam, options, &capture, degrees).map(|session| (session, capture))
     })();
     match opened {
-        Ok(session) => Ok(Running {
+        Ok((session, capture)) => Ok(Running {
             session,
             options: *options,
             serial: serial.to_string(),
             link,
+            capture,
             last_turn_check: Instant::now(),
             last_ping: Instant::now(),
             missed_pings: 0,

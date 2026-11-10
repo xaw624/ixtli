@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::audio;
-use crate::config::Options;
+use crate::config::{Capture, Options};
 use crate::sys::{Link, VirtualCam};
 
 const LOG_LINES: usize = 200;
@@ -49,6 +49,7 @@ pub struct Session {
     log: Arc<Mutex<Log>>,
     cam: VirtualCam,
     link: Link,
+    saver: bool,
     pub with_mic: bool,
     /// Giro con el que se abrió la cámara.
     pub degrees: u16,
@@ -60,6 +61,7 @@ impl Session {
         link: Link,
         cam: &VirtualCam,
         options: &Options,
+        capture: &Capture,
         degrees: u16,
     ) -> Result<Session, String> {
         let mut command = Command::new("scrcpy");
@@ -68,8 +70,8 @@ impl Session {
             .arg(serial)
             .arg("--video-source=camera")
             .arg(format!("--camera-facing={}", options.facing.scrcpy()))
-            .arg(format!("--camera-size={}", options.quality.size()))
-            .arg("--camera-fps=30")
+            .arg(format!("--camera-size={}", capture.size))
+            .arg(format!("--camera-fps={}", capture.fps))
             .arg(format!("--v4l2-sink={}", cam.path.display()))
             .arg(format!(
                 "--capture-orientation={}",
@@ -77,6 +79,9 @@ impl Session {
             ))
             // scrcpy no abre ventana: la vista previa la dibuja Ixtli.
             .arg("--no-window");
+        if let Some(rate) = capture.bit_rate {
+            command.arg(format!("--video-bit-rate={rate}"));
+        }
         if options.angle != 0 {
             command.arg(format!("--angle={}", options.angle.rem_euclid(360)));
         }
@@ -118,6 +123,7 @@ impl Session {
             log,
             cam: cam.clone(),
             link,
+            saver: options.saver,
             with_mic: options.mic,
             degrees,
         })
@@ -144,7 +150,7 @@ impl Session {
                     .or(log.last_warning.as_deref())
                     .or(log.lines.back().map(String::as_str))
                     .unwrap_or("scrcpy se cerró sin dar detalles");
-                Some(Err(explain(raw, self.link)))
+                Some(Err(explain(raw, self.link, self.saver)))
             }
             Err(e) => Some(Err(format!("No se pudo vigilar scrcpy: {e}"))),
         }
@@ -179,7 +185,7 @@ fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
 }
 
 /// Traduce los errores más comunes de scrcpy a algo que se pueda resolver.
-fn explain(raw: &str, link: Link) -> String {
+fn explain(raw: &str, link: Link, saver: bool) -> String {
     let lower = raw.to_lowercase();
     let known = if lower.contains("not supported before android 12") {
         "Tu teléfono necesita Android 12 o más nuevo para compartir la cámara."
@@ -193,8 +199,12 @@ fn explain(raw: &str, link: Link) -> String {
         "Falta aceptar el aviso de depuración USB en el teléfono."
     } else if lower.contains("v4l2") || lower.contains("failed to open output") {
         "No se pudo enviar el video a la cámara virtual. ¿La está usando otro programa?"
-    } else if lower.contains("camera") && (lower.contains("size") || lower.contains("no matching")) {
-        "La cámara de tu teléfono no acepta esa calidad. Prueba con 720p."
+    } else if lower.contains("camera") && (lower.contains("size") || lower.contains("no matching") || lower.contains("fps")) {
+        if saver {
+            "La cámara de tu teléfono no acepta el modo ahorro. Apágalo e intenta otra vez."
+        } else {
+            "La cámara de tu teléfono no acepta esa calidad. Prueba con 720p."
+        }
     } else {
         return format!("scrcpy se cerró con un error: {}", raw.trim());
     };
@@ -228,10 +238,13 @@ mod tests {
 
     #[test]
     fn explains_known_errors() {
-        assert!(explain("WARN: Device disconnected", Link::Usb).contains("cable USB"));
-        assert!(explain("WARN: Device disconnected", Link::Wifi).contains("WiFi"));
-        assert!(explain("ERROR: Camera mirroring is not supported before Android 12", Link::Usb)
+        assert!(explain("WARN: Device disconnected", Link::Usb, false).contains("cable USB"));
+        assert!(explain("WARN: Device disconnected", Link::Wifi, false).contains("WiFi"));
+        assert!(explain("ERROR: Camera mirroring is not supported before Android 12", Link::Usb, false)
             .contains("Android 12"));
-        assert!(explain("ERROR: algo raro", Link::Usb).contains("algo raro"));
+        assert!(explain("ERROR: algo raro", Link::Usb, false).contains("algo raro"));
+        let size = "ERROR: Could not select camera size";
+        assert!(explain(size, Link::Usb, false).contains("720p"));
+        assert!(explain(size, Link::Usb, true).contains("modo ahorro"));
     }
 }

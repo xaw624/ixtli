@@ -215,6 +215,7 @@ enum Message {
     Attach,
     Facing(Facing),
     Quality(Quality),
+    Saver(bool),
     Mic(bool),
     Preview(bool),
     LoadModule,
@@ -358,6 +359,10 @@ impl App {
             }
             Message::Quality(quality) => {
                 self.options.quality = quality;
+                self.options_changed();
+            }
+            Message::Saver(saver) => {
+                self.options.saver = saver;
                 self.options_changed();
             }
             Message::Mic(mic) => {
@@ -798,6 +803,7 @@ impl App {
                     Message::Quality,
                 ),
             ),
+            self.saver_row(),
             self.rotation_row(),
             self.angle_row(),
             option_row(
@@ -812,6 +818,24 @@ impl App {
         .spacing(14)
         ;
         card(list)
+    }
+
+    /// Modo ahorro. Encendido, dice qué tamaño se está usando.
+    fn saver_row(&self) -> Element<'_, Message> {
+        let detail = match (&self.state.capture, self.state.phase) {
+            (Some(capture), Phase::Live) if self.options.saver && capture.bit_rate.is_some() => capture.describe(),
+            _ if self.options.saver => "Cerca de 480p y 15 cuadros/s, en lugar de la calidad elegida".into(),
+            _ => "Gasta menos batería, con menos calidad".into(),
+        };
+        row![
+            column![text("Modo ahorro").size(15), text(detail).size(12).color(MUTED)]
+                .spacing(2)
+                .width(Length::Fill),
+            toggler(self.options.saver).on_toggle(Message::Saver),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
     }
 
     /// Giro: automático, cuartos de vuelta a cada lado y efecto espejo.

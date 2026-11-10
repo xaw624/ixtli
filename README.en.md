@@ -13,6 +13,7 @@ microphone you can pick in Meet, Zoom, Teams, OBS or any other program.
 
 - No app to install on the phone.
 - Front or back camera, in 720p or 1080p.
+- Power saving mode (about 480p at 15 frames per second) to use less battery.
 - Image rotation: automatic (follows the phone), quarter turns, a custom angle and a
   mirror effect.
 - Preview inside the window, which can be detached into its own window.
@@ -161,6 +162,7 @@ ixtli --encender                   # open the window and turn the camera on
 ixtli estado                       # check that everything is ready
 ixtli encender                     # turn on; Ctrl+C to turn off
 ixtli encender --trasera --1080    # back camera in 1080p
+ixtli encender --ahorro            # power saving mode: uses less battery
 ixtli encender --giro=90           # image rotated 90°
 ixtli encender --espejo --angulo=15  # mirror effect and 15° extra
 ixtli encender --sin-micro         # camera only

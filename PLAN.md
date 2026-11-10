@@ -7,19 +7,36 @@ Notas para retomar el proyecto en otra sesión. Actualizado el 10 de noviembre d
 Dónde quedó el trabajo:
 
 - **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
-- **Fase 2 empezada:** existe `ixtli medir`, probado solo con simuladores.
-- El commit `f8dc805` (`ixtli medir`) y los posteriores están **sin subir** a GitHub.
+- **Fase 2 empezada:** existe `ixtli medir` y el **modo ahorro** (interruptor en la
+  ventana y `--ahorro` en la terminal). Los dos se probaron solo con simuladores.
+- Todo hasta `036c68b` está subido a GitHub. El commit del modo ahorro es **local**,
+  sin subir.
 
 Lo siguiente, en orden:
 
-1. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
+1. **Probar el modo ahorro con el teléfono real** (ver la lista de abajo).
+2. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
    usuario; por teléfono son cuatro corridas de `ixtli medir 15` (720p y 1080p, por
    WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS. La batería solo se
-   ve por WiFi, porque por cable el teléfono se carga.
-2. **Seguir la fase 2:** modo ahorro, pantalla apagada, vista previa ligera, batería a
-   la vista, elegir lente y sondeos más lentos. Se puede programar sin la tabla, pero
-   sin ella no se puede demostrar cuánto ahorra cada cambio.
-3. Después, la fase 3 (motor de video propio).
+   ve por WiFi, porque por cable el teléfono se carga. Después, `ixtli medir 15
+   --ahorro` por WiFi, en la tabla del modo ahorro.
+3. **Seguir la fase 2**, en este orden: batería a la vista, elegir lente y pantalla
+   apagada (las tres son opcionales y no cambian lo que pasa por defecto, así que se
+   pueden programar antes de la tabla). Los sondeos más lentos y la vista previa
+   ligera sí cambian el gasto normal: van después de llenar la tabla base, para ver
+   la diferencia.
+4. Después, la fase 3 (motor de video propio).
+
+Pruebas del modo ahorro que faltan con el teléfono real:
+
+- Que `scrcpy --list-camera-sizes` responda en el A57 y el moto g34, y que Ixtli
+  elija un tamaño cercano a 480p (la ventana lo muestra bajo «Modo ahorro»). El
+  formato de la lista se tomó del código de scrcpy 3.3.4; si un teléfono la escribe
+  distinto, Ixtli se queda en 720p con 2 Mb/s.
+- Que la cámara acepte 15 cuadros/s y que la imagen se vea bien en Meet.
+- Prender y apagar el modo ahorro con la cámara en uso en Meet: cambia el tamaño de
+  la cámara virtual, igual que al girar.
+- Cómo se ve el interruptor nuevo en la ventana (no se revisó a la vista).
 
 Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inestable):
 
@@ -54,7 +71,8 @@ moto g34 5G:
 - Giro: automático, cuartos de vuelta, espejo y ángulo personalizado.
 - Vista previa incrustada en la ventana y desacoplable (`ixtli vista`).
 - Modo terminal: `ixtli estado`, `ixtli encender`, `ixtli --encender`.
-- **WiFi (sin commit todavía):** «Conectar por WiFi» con el cable una vez
+- Modo ahorro (cerca de 480p, 15 cuadros/s, 2 Mb/s), probado solo con simuladores.
+- **WiFi:** «Conectar por WiFi» con el cable una vez
   (`adb tcpip`), probado con el moto g34; y «Vincular con QR» sin cable
   (`adb pair` + mDNS, módulo `pairing.rs`), probado solo con un adb simulado.
 
@@ -169,9 +187,16 @@ motor propio.
   (`adb shell dumpsys battery`) y la CPU y memoria de Ixtli, scrcpy y adb. Probado
   solo con simuladores. **Falta llenar la tabla base** de `docs/mediciones.md` con los
   teléfonos reales (720p y 1080p, cable y WiFi) antes de tocar nada del ahorro.
-- **Modo ahorro:** un botón que baja a 480p, 15 o 24 cuadros por segundo y menos tasa
-  de bits (`--camera-size`, `--camera-fps`, `--video-bit-rate`). Los tamaños válidos
-  se leen de `scrcpy --list-camera-sizes`.
+- **Modo ahorro.** Hecho, probado solo con simuladores: interruptor «Modo ahorro» en
+  la ventana, `--ahorro` / `--sin-ahorro` en la terminal y `ahorro=si` en
+  `opciones.conf`. Ixtli lee una vez por teléfono `scrcpy --list-camera-sizes`
+  (`sys::phone_cameras`, guarda la respuesta mientras Ixtli siga abierto) y elige
+  (`Options::capture` en `config.rs`):
+  - tamaño: el más cercano a 480 de alto, de preferencia 16:9, siempre menos de 720p;
+  - cuadros: 15 si la cámara los acepta, si no 24, si no 30;
+  - tasa de bits: 2 Mb/s (scrcpy usa 8 Mb/s).
+  Si no puede leer la lista, usa 720p con 2 Mb/s. Con ahorro se ignora la calidad
+  elegida. `ixtli medir --ahorro` anota en la fila el tamaño que se usó.
 - **Pantalla apagada:** apagar la pantalla del teléfono al encender la cámara. No es
   compatible con el giro automático, que necesita la pantalla prendida: al activarla,
   el giro pasa a fijo.

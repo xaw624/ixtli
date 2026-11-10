@@ -13,6 +13,9 @@ Enciende la cámara 15 minutos y anota una muestra por minuto. Acepta las mismas
 opciones que `ixtli encender` (por ejemplo `ixtli medir 15 --trasera --1080`). Al
 terminar imprime una fila lista para pegar en la tabla de abajo.
 
+Para medir el modo ahorro, agrega `--ahorro`. El tamaño depende del teléfono: la fila
+dice cuál se usó, por ejemplo `frontal ahorro (854x480, 15 cuadros/s, 2 Mb/s)`.
+
 Para que las mediciones se puedan comparar:
 
 - Mide **por WiFi** si quieres ver el gasto de batería: por cable el teléfono se carga
@@ -35,3 +38,11 @@ Qué significa cada columna:
 |-------|----------|----------|----------|-----|-----------|-------|-------|------------|
 
 Faltan por medir, en el Galaxy A57 y en el moto g34: 720p y 1080p, por cable y por WiFi.
+
+## Modo ahorro (versión 0.3, en desarrollo)
+
+| Fecha | Teléfono | Conexión | Opciones | Min | Batería/h | Temp. | CPU % | Memoria MB |
+|-------|----------|----------|----------|-----|-----------|-------|-------|------------|
+
+Faltan por medir, en los dos teléfonos: `ixtli medir 15 --ahorro`, por WiFi (para la
+batería) y por cable. Hay que compararlo con la fila de 720p por WiFi de la tabla base.

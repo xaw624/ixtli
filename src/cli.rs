@@ -36,6 +36,8 @@ Uso:
 Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
   --frontal | --trasera      Qué cámara del teléfono usar.
   --720 | --1080             Calidad del video.
+  --ahorro | --sin-ahorro    Modo ahorro: cerca de 480p, 15 cuadros/s y menos tasa de bits,
+                             para que el teléfono gaste menos batería.
   --giro=auto|0|90|180|270   Girar la imagen (auto sigue la posición del teléfono).
   --espejo | --sin-espejo    Voltear la imagen como en un espejo.
   --angulo=GRADOS            Giro extra a cualquier ángulo, de -180 a 180.
@@ -329,6 +331,8 @@ fn read_options(flags: &[String]) -> Result<Options, ExitCode> {
             "--trasera" => options.facing = Facing::Back,
             "--720" => options.quality = Quality::Hd,
             "--1080" => options.quality = Quality::FullHd,
+            "--ahorro" => options.saver = true,
+            "--sin-ahorro" => options.saver = false,
             "--espejo" => options.mirror = true,
             "--sin-espejo" => options.mirror = false,
             angle if angle.starts_with("--angulo=") => match angle["--angulo=".len()..].parse::<i16>() {
@@ -386,11 +390,15 @@ fn measure_run(args: &[String]) -> ExitCode {
     let engine = Engine::spawn();
     engine.start(options);
     println!("Conectando con el teléfono...");
+    let mut capture = None;
     let live = loop {
         thread::sleep(Duration::from_millis(150));
         let state = engine.snapshot();
         match state.phase {
-            Phase::Live => break true,
+            Phase::Live => {
+                capture = state.capture;
+                break true;
+            }
             Phase::Off => {
                 eprintln!("{}", state.error.unwrap_or_else(|| "No se pudo encender la cámara.".into()));
                 break false;
@@ -416,9 +424,14 @@ fn measure_run(args: &[String]) -> ExitCode {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
         },
-        match options.quality {
-            Quality::Hd => "720p",
-            Quality::FullHd => "1080p",
+        match (options.saver, options.quality) {
+            // En ahorro el tamaño depende del teléfono: se anota el que se usó.
+            (true, _) => format!(
+                "ahorro ({})",
+                capture.as_ref().map(|c| c.describe()).unwrap_or_else(|| "tamaño desconocido".into())
+            ),
+            (false, Quality::Hd) => "720p".into(),
+            (false, Quality::FullHd) => "1080p".into(),
         },
         if options.mic { " + micro" } else { "" },
     );

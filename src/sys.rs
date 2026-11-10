@@ -3,8 +3,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::config::Facing;
 
 /// Etiqueta que Ixtli le pone a la cámara virtual cuando la crea.
 pub const CAM_LABEL: &str = "Ixtli";
@@ -46,7 +49,12 @@ pub fn run(bin: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> Result<String, Fa
 /// Como [`run`], pero si el programa tarda más de `limit` lo cierra. Sirve
 /// para adb: con la red caída, sus comandos se pueden quedar esperando.
 pub fn run_for(bin: impl AsRef<std::ffi::OsStr>, args: &[&str], limit: Duration) -> Result<String, Failure> {
-    let bin = bin.as_ref();
+    finish(output_for(bin.as_ref(), args, limit)?)
+}
+
+/// Ejecuta un programa con tiempo límite y devuelve toda su salida, haya
+/// terminado bien o no.
+fn output_for(bin: &std::ffi::OsStr, args: &[&str], limit: Duration) -> Result<std::process::Output, Failure> {
     let mut child = Command::new(bin)
         .args(args)
         .env("LC_ALL", "C")
@@ -72,8 +80,7 @@ pub fn run_for(bin: impl AsRef<std::ffi::OsStr>, args: &[&str], limit: Duration)
             Err(e) => return Err(launch_failure(bin, e)),
         }
     }
-    let output = child.wait_with_output().map_err(|e| launch_failure(bin, e))?;
-    finish(output)
+    child.wait_with_output().map_err(|e| launch_failure(bin, e))
 }
 
 fn launch_failure(bin: &std::ffi::OsStr, error: std::io::Error) -> Failure {
@@ -637,6 +644,92 @@ pub fn restart_adb() {
 }
 
 // ---------------------------------------------------------------------------
+// Cámaras del teléfono
+// ---------------------------------------------------------------------------
+
+/// Una cámara del teléfono, según `scrcpy --list-camera-sizes`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhoneCamera {
+    /// `None` si es externa o de un tipo que Ixtli no usa.
+    pub facing: Option<Facing>,
+    /// Cuadros por segundo que acepta (`fps=[15, 24, 30]`).
+    pub fps: Vec<u16>,
+    /// Tamaños de captura válidos, como los escribe scrcpy (ancho × alto).
+    pub sizes: Vec<(u32, u32)>,
+}
+
+/// Las cámaras del teléfono. Preguntar tarda un par de segundos (scrcpy
+/// copia su servidor al teléfono), así que la respuesta se guarda mientras
+/// Ixtli siga abierto. `None` si no se pudo saber.
+pub fn phone_cameras(serial: &str) -> Option<Vec<PhoneCamera>> {
+    static KNOWN: Mutex<Vec<(String, Vec<PhoneCamera>)>> = Mutex::new(Vec::new());
+    if let Some((_, cameras)) = KNOWN.lock().unwrap().iter().find(|(known, _)| known == serial) {
+        return Some(cameras.clone());
+    }
+    let output = output_for(
+        std::ffi::OsStr::new("scrcpy"),
+        &["-s", serial, "--list-camera-sizes"],
+        Duration::from_secs(15),
+    )
+    .ok()?;
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cameras = parse_cameras(&text);
+    if cameras.is_empty() {
+        return None;
+    }
+    KNOWN.lock().unwrap().push((serial.to_string(), cameras.clone()));
+    Some(cameras)
+}
+
+/// Lee la lista de scrcpy:
+///
+/// ```text
+/// [server] INFO: List of cameras:
+///     --camera-id=0    (back, 4000x3000, fps=[15, 24, 30])
+///         - 1920x1080
+///         - 1280x720
+///       High speed capture (--camera-high-speed):
+///         - 1920x1080 (fps=[120])
+/// ```
+///
+/// Los tamaños de alta velocidad no sirven sin `--camera-high-speed`, así
+/// que se ignoran.
+fn parse_cameras(text: &str) -> Vec<PhoneCamera> {
+    let mut cameras: Vec<PhoneCamera> = Vec::new();
+    let mut high_speed = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("--camera-id=") {
+            let details = rest.split_once('(').map(|(_, d)| d).unwrap_or("");
+            let facing = match details.split(',').next().map(str::trim) {
+                Some("front") => Some(Facing::Front),
+                Some("back") => Some(Facing::Back),
+                _ => None,
+            };
+            let fps = details
+                .split_once("fps=[")
+                .and_then(|(_, list)| list.split_once(']'))
+                .map(|(list, _)| list.split(',').filter_map(|n| n.trim().parse().ok()).collect())
+                .unwrap_or_default();
+            cameras.push(PhoneCamera { facing, fps, sizes: Vec::new() });
+            high_speed = false;
+        } else if line.starts_with("High speed") {
+            high_speed = true;
+        } else if let (Some(size), Some(camera), false) = (line.strip_prefix("- "), cameras.last_mut(), high_speed) {
+            if let Some((w, h)) = size.trim().split_once('x') {
+                if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
+                    camera.sizes.push((w, h));
+                }
+            }
+        }
+    }
+    cameras
+}
+
+// ---------------------------------------------------------------------------
 // Cámara virtual (v4l2loopback)
 // ---------------------------------------------------------------------------
 
@@ -756,6 +849,34 @@ mod tests {
         assert_eq!(scrcpy_version("scrcpy v2.4\n"), Some((2, 4, "2.4".to_string())));
         assert_eq!(scrcpy_version("scrcpy 1.25"), Some((1, 25, "1.25".to_string())));
         assert_eq!(scrcpy_version("otra cosa"), None);
+    }
+
+    #[test]
+    fn camera_list() {
+        let text = "\
+[server] INFO: List of cameras:
+    --camera-id=0    (back, 4000x3000, fps=[15, 24, 30])
+        - 1920x1080
+        - 1280x720
+        - 864x480
+      High speed capture (--camera-high-speed):
+        - 1280x720 (fps=[120, 240])
+    --camera-id=1    (front, 3264x2448, fps=[15, 30])
+        - 1280x720
+        - 640x480
+    --camera-id=2    (external, 1920x1080)
+        (none)
+";
+        let cameras = parse_cameras(text);
+        assert_eq!(cameras.len(), 3);
+        assert_eq!(cameras[0].facing, Some(Facing::Back));
+        assert_eq!(cameras[0].fps, vec![15, 24, 30]);
+        assert_eq!(cameras[0].sizes, vec![(1920, 1080), (1280, 720), (864, 480)]);
+        assert_eq!(cameras[1].facing, Some(Facing::Front));
+        assert_eq!(cameras[1].sizes, vec![(1280, 720), (640, 480)]);
+        assert_eq!(cameras[2].facing, None);
+        assert!(cameras[2].fps.is_empty() && cameras[2].sizes.is_empty());
+        assert!(parse_cameras("ERROR: Could not find any ADB device").is_empty());
     }
 
     #[test]
