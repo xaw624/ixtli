@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ixtli
+GenericName=Cámara web con el celular
+Comment=Usa tu celular Android como cámara web y micrófono
+Exec=ixtli
+Icon=ixtli
+Terminal=false
+Categories=AudioVideo;Video;Utility;
+Keywords=webcam;camara;cámara;microfono;micrófono;android;celular;scrcpy;
+StartupWMClass=ixtli

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="fondo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c1f27"/>
+      <stop offset="1" stop-color="#12141a"/>
+    </linearGradient>
+    <linearGradient id="jade" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5fe0c4"/>
+      <stop offset="1" stop-color="#1f9d84"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#fondo)"/>
+  <!-- Ojo: "ixtli" significa rostro u ojo en náhuatl -->
+  <path d="M36 128 C72 72 184 72 220 128 C184 184 72 184 36 128 Z"
+        fill="none" stroke="url(#jade)" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="128" cy="128" r="34" fill="url(#jade)"/>
+  <circle cx="128" cy="128" r="14" fill="#12141a"/>
+  <circle cx="140" cy="116" r="6" fill="#e8eaed"/>
+</svg>

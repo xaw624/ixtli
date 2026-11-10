@@ -1,0 +1,26 @@
+[package]
+name = "ixtli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+resolver = "3"
+description = "Usa tu celular Android como cámara web y micrófono en Linux"
+license = "MIT"
+repository = "https://github.com/xaw624/ixtli"
+readme = "README.md"
+keywords = ["webcam", "android", "scrcpy", "v4l2loopback", "linux"]
+categories = ["multimedia::video"]
+
+[dependencies]
+# Interfaz. Se usa el renderizador por software (tiny-skia) para no depender
+# de drivers de GPU: la ventana es pequeña y así funciona en cualquier equipo.
+iced = { version = "0.13", default-features = false, features = ["tiny-skia", "tokio"] }
+ctrlc = "3"
+libc = "0.2"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+strip = true
