@@ -35,13 +35,44 @@ impl Quality {
     }
 }
 
+/// Cómo girar la imagen de la cámara.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rotation {
+    /// Sigue la orientación del teléfono (necesita el giro automático activado).
+    Auto,
+    /// Giro fijo en grados, en el sentido del reloj: 0, 90, 180 o 270.
+    Fixed(u16),
+}
+
+impl Rotation {
+    /// Grados que hay que pedirle a scrcpy.
+    ///
+    /// `device_quarters` es cuánto está girado el teléfono (0 a 3, en cuartos
+    /// de vuelta) o `None` si no se sabe; entonces se asume que está vertical.
+    /// El sensor de las cámaras está montado de lado: 90° el trasero y 270°
+    /// el frontal, como en casi todos los teléfonos.
+    pub fn degrees(self, facing: Facing, device_quarters: Option<u8>) -> u16 {
+        match self {
+            Rotation::Fixed(degrees) => degrees % 360,
+            Rotation::Auto => {
+                let device = u16::from(device_quarters.unwrap_or(0) % 4) * 90;
+                match facing {
+                    Facing::Back => (90 + 360 - device) % 360,
+                    Facing::Front => (270 + device) % 360,
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     pub facing: Facing,
     pub quality: Quality,
+    pub rotation: Rotation,
     /// Usar también el micrófono del teléfono.
     pub mic: bool,
-    /// Abrir una ventana con la imagen de la cámara.
+    /// Mostrar la imagen de la cámara dentro de la ventana.
     pub preview: bool,
 }
 
@@ -50,8 +81,9 @@ impl Default for Options {
         Options {
             facing: Facing::Front,
             quality: Quality::Hd,
+            rotation: Rotation::Fixed(0),
             mic: true,
-            preview: false,
+            preview: true,
         }
     }
 }
@@ -90,7 +122,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\nmicrofono={}\nvista_previa={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nmicrofono={}\nvista_previa={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -98,6 +130,10 @@ fn serialize(o: &Options) -> String {
         match o.quality {
             Quality::Hd => "720",
             Quality::FullHd => "1080",
+        },
+        match o.rotation {
+            Rotation::Auto => "auto".to_string(),
+            Rotation::Fixed(degrees) => degrees.to_string(),
         },
         yes_no(o.mic),
         yes_no(o.preview),
@@ -114,6 +150,10 @@ fn parse(text: &str) -> Options {
             ("camara", "trasera") => o.facing = Facing::Back,
             ("calidad", "720") => o.quality = Quality::Hd,
             ("calidad", "1080") => o.quality = Quality::FullHd,
+            ("giro", "auto") => o.rotation = Rotation::Auto,
+            ("giro", v @ ("0" | "90" | "180" | "270")) => {
+                o.rotation = Rotation::Fixed(v.parse().unwrap_or(0))
+            }
             ("microfono", v) => o.mic = v == "si",
             ("vista_previa", v) => o.preview = v == "si",
             _ => {}
@@ -131,15 +171,35 @@ mod tests {
         let o = Options {
             facing: Facing::Back,
             quality: Quality::FullHd,
+            rotation: Rotation::Fixed(270),
             mic: false,
-            preview: true,
+            preview: false,
         };
         assert_eq!(parse(&serialize(&o)), o);
+        let auto = Options {
+            rotation: Rotation::Auto,
+            ..o
+        };
+        assert_eq!(parse(&serialize(&auto)), auto);
         assert_eq!(parse(&serialize(&Options::default())), Options::default());
     }
 
     #[test]
     fn ignores_garbage() {
-        assert_eq!(parse("hola\ncamara=lateral\n=\n"), Options::default());
+        assert_eq!(parse("hola\ncamara=lateral\ngiro=45\n=\n"), Options::default());
+    }
+
+    #[test]
+    fn auto_rotation_follows_the_phone() {
+        let auto = Rotation::Auto;
+        // Teléfono vertical (o sin dato): se endereza según el sensor.
+        assert_eq!(auto.degrees(Facing::Front, None), 270);
+        assert_eq!(auto.degrees(Facing::Back, Some(0)), 90);
+        // Teléfono acostado: el sensor ya queda derecho.
+        assert_eq!(auto.degrees(Facing::Front, Some(1)), 0);
+        assert_eq!(auto.degrees(Facing::Back, Some(1)), 0);
+        assert_eq!(auto.degrees(Facing::Front, Some(3)), 180);
+        assert_eq!(auto.degrees(Facing::Back, Some(3)), 180);
+        assert_eq!(Rotation::Fixed(90).degrees(Facing::Front, Some(2)), 90);
     }
 }

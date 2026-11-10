@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::audio;
-use crate::config::Options;
+use crate::config::{Options, Rotation};
 use crate::session::Session;
 use crate::sys::{self, Deps, Phone, VirtualCam};
 
@@ -105,7 +105,7 @@ fn update(shared: &Mutex<Snapshot>, change: impl FnOnce(&mut Snapshot)) {
 }
 
 fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
-    let mut session: Option<Session> = None;
+    let mut session: Option<Running> = None;
     let mut deps_checked: Option<Instant> = None;
 
     loop {
@@ -120,16 +120,35 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
 
         match &mut session {
             // Con la cámara encendida solo se vigila a scrcpy.
-            Some(running) => match running.finished() {
+            Some(running) => match running.session.finished() {
                 Some(outcome) => {
-                    end(&mut session);
+                    end(&mut session, false);
                     update(&shared, |state| {
                         state.phase = Phase::Off;
                         state.mic = false;
                         state.error = outcome.err();
                     });
                 }
-                None if running.is_live() => update(&shared, |state| state.phase = Phase::Live),
+                None if running.session.is_live() => {
+                    update(&shared, |state| state.phase = Phase::Live);
+                    // Giro automático: si el teléfono cambió de posición, se
+                    // reabre la cámara con el giro nuevo (tarda un par de segundos).
+                    if running.turned() {
+                        let (options, serial) = (running.options, running.serial.clone());
+                        end(&mut session, true);
+                        match open(&options, &serial, true) {
+                            Ok(reopened) => {
+                                session = Some(reopened);
+                                update(&shared, |state| state.phase = Phase::Starting);
+                            }
+                            Err(problem) => update(&shared, |state| {
+                                state.phase = Phase::Off;
+                                state.mic = false;
+                                state.error = Some(problem);
+                            }),
+                        }
+                    }
+                }
                 None => {}
             },
             None => {
@@ -153,8 +172,11 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
         };
         match inbox.recv_timeout(pause) {
             Ok(Order::Start(options)) => {
-                end(&mut session);
-                match begin(&options) {
+                // Si el micrófono sigue en uso se conserva, para que la
+                // videollamada no lo pierda al cambiar una opción.
+                let keep_mic = options.mic && session.as_ref().is_some_and(|s| s.session.with_mic);
+                end(&mut session, keep_mic);
+                match begin(&options, keep_mic) {
                     Ok(started) => {
                         session = Some(started);
                         update(&shared, |state| {
@@ -171,7 +193,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 }
             }
             Ok(Order::Stop) => {
-                end(&mut session);
+                end(&mut session, false);
                 update(&shared, |state| {
                     state.phase = Phase::Off;
                     state.mic = false;
@@ -188,7 +210,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             }
             Ok(Order::RestartAdb) => sys::restart_adb(),
             Ok(Order::Quit) | Err(RecvTimeoutError::Disconnected) => {
-                end(&mut session);
+                end(&mut session, false);
                 break;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -196,42 +218,101 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     }
 }
 
-/// Deja todo listo y abre scrcpy. Cada paso que falla explica qué hacer.
-fn begin(options: &Options) -> Result<Session, String> {
-    let deps = Deps::check();
-    if let Some(problem) = deps.problem(options.mic) {
-        return Err(problem);
-    }
-    let serial = match sys::phone() {
-        Phone::Ready { serial, .. } => serial,
-        other => return Err(other.advice().to_string()),
-    };
-    let cam = match sys::virtual_cam() {
-        Some(cam) => cam,
-        None => sys::load_module()?,
-    };
-    if cam.streaming() {
-        return Err(format!(
-            "La cámara virtual «{}» ya está recibiendo video de otro programa (¿scrcpy abierto en una terminal?). Ciérralo e intenta otra vez.",
-            cam.label
-        ));
-    }
-    if options.mic {
-        audio::create()?;
-    }
-    Session::start(&serial, &cam, options).inspect_err(|_| {
-        if options.mic {
-            audio::remove();
-        }
-    })
+/// Una sesión abierta, con lo necesario para reabrirla si hay que girarla.
+struct Running {
+    session: Session,
+    options: Options,
+    serial: String,
+    last_turn_check: Instant,
 }
 
-/// Cierra la sesión (si hay) y quita el micrófono virtual que usaba.
-fn end(session: &mut Option<Session>) {
+impl Running {
+    /// Con giro automático: el teléfono ya no está en la posición con la que
+    /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos.
+    fn turned(&mut self) -> bool {
+        if self.options.rotation != Rotation::Auto
+            || self.last_turn_check.elapsed() < Duration::from_millis(1500)
+        {
+            return false;
+        }
+        self.last_turn_check = Instant::now();
+        match sys::phone_rotation(&self.serial) {
+            // Sin dato del sensor no se toca nada.
+            None => false,
+            quarters => self.options.rotation.degrees(self.options.facing, quarters) != self.session.degrees,
+        }
+    }
+}
+
+/// Deja todo listo y abre scrcpy. Cada paso que falla explica qué hacer.
+fn begin(options: &Options, mic_ready: bool) -> Result<Running, String> {
+    let checked = (|| {
+        let deps = Deps::check();
+        if let Some(problem) = deps.problem(options.mic) {
+            return Err(problem);
+        }
+        match sys::phone() {
+            Phone::Ready { serial, .. } => Ok(serial),
+            other => Err(other.advice().to_string()),
+        }
+    })();
+    match checked {
+        Ok(serial) => open(options, &serial, mic_ready),
+        Err(problem) => {
+            if mic_ready {
+                audio::remove();
+            }
+            Err(problem)
+        }
+    }
+}
+
+/// Abre scrcpy hacia la cámara virtual. Si falla, no deja el micrófono puesto.
+fn open(options: &Options, serial: &str, mic_ready: bool) -> Result<Running, String> {
+    let opened = (|| {
+        let cam = match sys::virtual_cam() {
+            Some(cam) => cam,
+            None => sys::load_module()?,
+        };
+        if cam.streaming() {
+            return Err(format!(
+                "La cámara virtual «{}» ya está recibiendo video de otro programa (¿scrcpy abierto en una terminal?). Ciérralo e intenta otra vez.",
+                cam.label
+            ));
+        }
+        if options.mic && !mic_ready {
+            audio::create()?;
+        }
+        let quarters = match options.rotation {
+            Rotation::Auto => sys::phone_rotation(serial),
+            Rotation::Fixed(_) => None,
+        };
+        let degrees = options.rotation.degrees(options.facing, quarters);
+        Session::start(serial, &cam, options, degrees)
+    })();
+    match opened {
+        Ok(session) => Ok(Running {
+            session,
+            options: *options,
+            serial: serial.to_string(),
+            last_turn_check: Instant::now(),
+        }),
+        Err(problem) => {
+            if options.mic {
+                audio::remove();
+            }
+            Err(problem)
+        }
+    }
+}
+
+/// Cierra la sesión (si hay). El micrófono virtual se quita salvo que la
+/// siguiente sesión lo vaya a seguir usando.
+fn end(session: &mut Option<Running>, keep_mic: bool) {
     if let Some(running) = session.take() {
-        let with_mic = running.with_mic;
-        running.stop();
-        if with_mic {
+        let with_mic = running.session.with_mic;
+        running.session.stop();
+        if with_mic && !keep_mic {
             audio::remove();
         }
     }

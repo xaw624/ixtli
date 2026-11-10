@@ -45,10 +45,17 @@ pub struct Session {
     log: Arc<Mutex<Log>>,
     cam: VirtualCam,
     pub with_mic: bool,
+    /// Giro con el que se abrió la cámara.
+    pub degrees: u16,
 }
 
 impl Session {
-    pub fn start(serial: &str, cam: &VirtualCam, options: &Options) -> Result<Session, String> {
+    pub fn start(
+        serial: &str,
+        cam: &VirtualCam,
+        options: &Options,
+        degrees: u16,
+    ) -> Result<Session, String> {
         let mut command = Command::new("scrcpy");
         command
             .arg("-s")
@@ -57,7 +64,10 @@ impl Session {
             .arg(format!("--camera-facing={}", options.facing.scrcpy()))
             .arg(format!("--camera-size={}", options.quality.size()))
             .arg("--camera-fps=30")
-            .arg(format!("--v4l2-sink={}", cam.path.display()));
+            .arg(format!("--v4l2-sink={}", cam.path.display()))
+            .arg(format!("--capture-orientation={degrees}"))
+            // scrcpy no abre ventana: la vista previa la dibuja Ixtli.
+            .arg("--no-window");
         if options.mic {
             // El audio del teléfono se "reproduce" en la salida interna de
             // Ixtli; de ahí lo toma el micrófono virtual.
@@ -67,11 +77,6 @@ impl Session {
                 .env("PULSE_SINK", audio::SINK);
         } else {
             command.arg("--no-audio");
-        }
-        if options.preview {
-            command.arg("--window-title=Ixtli - vista previa");
-        } else {
-            command.arg("--no-video-playback");
         }
         command
             .stdin(Stdio::null())
@@ -101,6 +106,7 @@ impl Session {
             log,
             cam: cam.clone(),
             with_mic: options.mic,
+            degrees,
         })
     }
 

@@ -14,8 +14,8 @@ categories = ["multimedia::video"]
 [dependencies]
 # Interfaz. Se usa el renderizador por software (tiny-skia) para no depender
 # de drivers de GPU: la ventana es pequeña y así funciona en cualquier equipo.
-iced = { version = "0.13", default-features = false, features = ["tiny-skia", "tokio"] }
-ctrlc = "3"
+iced = { version = "0.13", default-features = false, features = ["tiny-skia", "tokio", "image"] }
+ctrlc = { version = "3", features = ["termination"] }
 libc = "0.2"
 
 [profile.dev.package."*"]

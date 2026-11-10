@@ -10,8 +10,9 @@ use std::time::Duration;
 pub const CAM_LABEL: &str = "Ixtli";
 const CAM_NUMBER: u32 = 10;
 
-/// La cámara del teléfono existe en scrcpy desde la versión 2.2.
-const MIN_SCRCPY: (u32, u32) = (2, 2);
+/// Ixtli usa opciones de scrcpy (girar la imagen, no abrir ventana) que
+/// existen desde la versión 3.0.
+const MIN_SCRCPY: (u32, u32) = (3, 0);
 
 /// Busca un programa en el PATH y en los directorios de administración,
 /// que en Debian no están en el PATH de los usuarios normales.
@@ -254,6 +255,42 @@ fn parse_devices(output: &str) -> Phone {
     found
 }
 
+/// Cuánto está girado el teléfono, en cuartos de vuelta (0 = vertical).
+///
+/// Usa el sensor de orientación de Android, que solo está activo con el giro
+/// automático encendido y la pantalla prendida. Si no, devuelve `None`.
+pub fn phone_rotation(serial: &str) -> Option<u8> {
+    let output = run(
+        "adb",
+        &["-s", serial, "shell", "dumpsys window | grep -A12 WindowOrientationListener"],
+    )
+    .ok()?;
+    parse_rotation(&output)
+}
+
+fn parse_rotation(dump: &str) -> Option<u8> {
+    let value = |key: &str| {
+        dump.lines()
+            .find_map(|line| line.trim().strip_prefix(key)?.strip_prefix('='))
+    };
+    if value("mEnabled")? != "true" {
+        return None;
+    }
+    // Android escribe "ROTATION_90" o el número de cuartos de vuelta.
+    let quarters = |text: &str| -> Option<u8> {
+        let text = text.trim();
+        match text.strip_prefix("ROTATION_") {
+            Some(degrees) => Some((degrees.parse::<u16>().ok()? / 90) as u8),
+            None => text.parse::<u8>().ok(),
+        }
+        .filter(|quarters| *quarters < 4)
+    };
+    // La propuesta del sensor es lo más reciente; vale -1 mientras no cambia.
+    value("mProposedRotation")
+        .and_then(quarters)
+        .or_else(|| value("mCurrentRotation").and_then(quarters))
+}
+
 /// Reinicia el servidor de adb. Suele destrabar un teléfono que sigue
 /// "sin autorizar" después de aceptar el aviso.
 pub fn restart_adb() {
@@ -275,6 +312,13 @@ pub struct VirtualCam {
 }
 
 impl VirtualCam {
+    /// Tamaño del video que está llegando, si es del formato que Ixtli sabe
+    /// mostrar (YU12, el que usa scrcpy).
+    pub fn frame_size(&self) -> Option<(usize, usize)> {
+        let format = fs::read_to_string(self.sysfs.join("format")).ok()?;
+        parse_format(&format)
+    }
+
     /// Algún programa ya está enviando video a la cámara virtual.
     pub fn streaming(&self) -> bool {
         match fs::read_to_string(self.sysfs.join("state")) {
@@ -286,6 +330,15 @@ impl VirtualCam {
             Err(_) => false,
         }
     }
+}
+
+/// De "YU12:1280x720@30" saca (1280, 720).
+fn parse_format(format: &str) -> Option<(usize, usize)> {
+    let size = format.trim().strip_prefix("YU12:")?;
+    let (width, rest) = size.split_once('x')?;
+    let height = rest.split('@').next()?;
+    let (width, height) = (width.parse().ok()?, height.parse().ok()?);
+    (width > 0 && height > 0 && width <= 8192 && height <= 8192).then_some((width, height))
 }
 
 /// Busca una cámara virtual ya creada. Prefiere la que creó Ixtli.
@@ -368,6 +421,13 @@ mod tests {
     }
 
     #[test]
+    fn video_format() {
+        assert_eq!(parse_format("YU12:720x1280@30\n"), Some((720, 1280)));
+        assert_eq!(parse_format("YUYV:640x480@30"), None);
+        assert_eq!(parse_format(""), None);
+    }
+
+    #[test]
     fn device_ready() {
         let output = "List of devices attached\n\
             ABC123                 device usb:1-3 product:a57x model:SM_A576B device:a57x transport_id:1\n\n";
@@ -395,6 +455,17 @@ mod tests {
             parse_devices("List of devices attached\nABC123  offline\n"),
             Phone::Offline
         );
+    }
+
+    #[test]
+    fn rotation_from_sensor() {
+        let off = "    WindowOrientationListener\n      mEnabled=false\n      mCurrentRotation=ROTATION_0\n";
+        assert_eq!(parse_rotation(off), None);
+        let steady = "    WindowOrientationListener\n      mEnabled=true\n      mCurrentRotation=ROTATION_90\n        mProposedRotation=-1\n";
+        assert_eq!(parse_rotation(steady), Some(1));
+        let turning = "      mEnabled=true\n      mCurrentRotation=ROTATION_0\n        mProposedRotation=3\n";
+        assert_eq!(parse_rotation(turning), Some(3));
+        assert_eq!(parse_rotation("nada"), None);
     }
 
     #[test]

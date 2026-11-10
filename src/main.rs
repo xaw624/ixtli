@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod engine;
 mod gui;
+mod preview;
 mod session;
 mod sys;
 

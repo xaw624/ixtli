@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::audio;
-use crate::config::{self, Facing, Quality};
+use crate::config::{self, Facing, Quality, Rotation};
 use crate::engine::{Engine, Phase};
 use crate::gui;
 use crate::sys::{self, Deps, Phone, Tool};
@@ -17,21 +17,23 @@ Ixtli: usa tu celular Android como cámara web y micrófono.
 
 Uso:
   ixtli                      Abre la ventana.
+  ixtli --encender           Abre la ventana y enciende la cámara de una vez.
   ixtli estado               Revisa si todo está listo.
   ixtli encender [opciones]  Enciende la cámara desde la terminal (Ctrl+C para apagar).
+  ixtli vista                Abre una ventana con la imagen de la cámara.
 
 Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
   --frontal | --trasera      Qué cámara del teléfono usar.
   --720 | --1080             Calidad del video.
+  --giro=auto|0|90|180|270   Girar la imagen (auto sigue la posición del teléfono).
   --micro | --sin-micro      Usar o no el micrófono del teléfono.
-  --vista                    Abrir una ventana con la imagen.
 
   -h, --help                 Muestra esta ayuda.
   -V, --version              Muestra la versión.";
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
-        None => match gui::run() {
+        None | Some("--encender") => match gui::run(args.first().is_some()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("No se pudo abrir la ventana: {e}");
@@ -40,6 +42,13 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         },
         Some("estado" | "status") => status(),
+        Some("vista") => match gui::run_viewer() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("No se pudo abrir la ventana: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("encender" | "start") => start(&args[1..]),
         Some("-h" | "--help" | "ayuda" | "help") => {
             println!("{HELP}");
@@ -68,7 +77,7 @@ fn status() -> ExitCode {
     let deps = Deps::check();
     let scrcpy = match &deps.scrcpy {
         Tool::Ok => "instalado".to_string(),
-        Tool::TooOld(version) => format!("versión {version}, muy vieja (se necesita 2.2 o más nueva)"),
+        Tool::TooOld(version) => format!("versión {version}, muy vieja (se necesita 3.0 o más nueva)"),
         Tool::Missing => "falta instalarlo".to_string(),
     };
     println!("{} scrcpy: {scrcpy}", mark(deps.scrcpy == Tool::Ok));
@@ -128,7 +137,11 @@ fn start(flags: &[String]) -> ExitCode {
             "--1080" => options.quality = Quality::FullHd,
             "--micro" => options.mic = true,
             "--sin-micro" => options.mic = false,
-            "--vista" => options.preview = true,
+            "--giro=auto" => options.rotation = Rotation::Auto,
+            "--giro=0" => options.rotation = Rotation::Fixed(0),
+            "--giro=90" => options.rotation = Rotation::Fixed(90),
+            "--giro=180" => options.rotation = Rotation::Fixed(180),
+            "--giro=270" => options.rotation = Rotation::Fixed(270),
             other => {
                 eprintln!("No conozco la opción «{other}».\n\n{HELP}");
                 return ExitCode::from(2);
