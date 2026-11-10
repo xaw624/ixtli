@@ -5,7 +5,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use iced::widget::{
-    button, column, container, horizontal_space, image, row, scrollable, text, toggler, Space,
+    button, column, container, horizontal_space, image, row, scrollable, slider, text,
+    toggler, Space,
 };
 use iced::{
     border, color, font, window, Alignment, Background, Color, ContentFit, Element, Font, Length,
@@ -30,6 +31,10 @@ const AMBER: Color = color!(0xf5a524);
 const RED: Color = color!(0xe5484d);
 const GRAY: Color = color!(0x5b6270);
 const ON_ACCENT: Color = color!(0x06231d);
+
+const ICON_RIGHT: &[u8] = include_bytes!("../assets/iconos/girar-derecha.svg");
+const ICON_LEFT: &[u8] = include_bytes!("../assets/iconos/girar-izquierda.svg");
+const ICON_MIRROR: &[u8] = include_bytes!("../assets/iconos/espejo.svg");
 
 const BOLD: Font = Font {
     weight: font::Weight::Bold,
@@ -181,6 +186,9 @@ struct App {
     picture: Picture,
     /// La ventana suelta de la vista previa, si está desacoplada.
     viewer: Option<Child>,
+    /// Ángulo que marca el control mientras se arrastra.
+    angle_draft: i16,
+    icons: Icons,
 }
 
 #[derive(Debug, Clone)]
@@ -188,7 +196,13 @@ enum Message {
     Tick,
     Frame,
     Power,
-    Rotation(Rotation),
+    AutoRotation,
+    Rotate { clockwise: bool },
+    Mirror,
+    /// El control del ángulo se está moviendo (todavía no se aplica).
+    AngleDrag(i16),
+    AngleApply,
+    AngleReset,
     Detach,
     Attach,
     Facing(Facing),
@@ -220,10 +234,13 @@ impl Level {
 
 impl App {
     fn new(engine: Engine) -> App {
+        let options = config::load();
         App {
             state: engine.snapshot(),
             engine,
-            options: config::load(),
+            angle_draft: options.angle,
+            icons: Icons::load(),
+            options,
             copied: false,
             preview: Preview::spawn(),
             picture: Picture::default(),
@@ -259,9 +276,34 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Tick | Message::Frame => {}
-            Message::Rotation(rotation) => {
-                self.options.rotation = rotation;
+            Message::AutoRotation => {
+                self.options.rotation = match self.options.rotation {
+                    Rotation::Auto => Rotation::Fixed(0),
+                    Rotation::Fixed(_) => Rotation::Auto,
+                };
                 self.options_changed();
+            }
+            Message::Rotate { clockwise } => {
+                self.options.rotation = self.options.rotation.turned(clockwise);
+                self.options_changed();
+            }
+            Message::Mirror => {
+                self.options.mirror = !self.options.mirror;
+                self.options_changed();
+            }
+            Message::AngleDrag(angle) => self.angle_draft = config::clamp_angle(angle),
+            Message::AngleApply => {
+                if self.options.angle != self.angle_draft {
+                    self.options.angle = self.angle_draft;
+                    self.options_changed();
+                }
+            }
+            Message::AngleReset => {
+                self.angle_draft = 0;
+                if self.options.angle != 0 {
+                    self.options.angle = 0;
+                    self.options_changed();
+                }
             }
             Message::Detach => {
                 if let Ok(program) = std::env::current_exe() {
@@ -535,20 +577,8 @@ impl App {
                     Message::Quality,
                 ),
             ),
-            option_row(
-                "Giro",
-                segmented(
-                    &[
-                        (Rotation::Auto, "Auto"),
-                        (Rotation::Fixed(0), "0°"),
-                        (Rotation::Fixed(90), "90°"),
-                        (Rotation::Fixed(180), "180°"),
-                        (Rotation::Fixed(270), "270°"),
-                    ],
-                    options.rotation,
-                    Message::Rotation,
-                ),
-            ),
+            self.rotation_row(),
+            self.angle_row(),
             option_row(
                 "Usar el micrófono del celular",
                 toggler(options.mic).on_toggle(Message::Mic).into(),
@@ -559,12 +589,56 @@ impl App {
             ),
         ]
         .spacing(14)
-        .push_maybe((options.rotation == Rotation::Auto).then(|| {
-            text("El giro automático sigue la posición del teléfono. Activa el giro automático de pantalla en el teléfono y deja la pantalla encendida.")
-                .size(12)
-                .color(MUTED)
-        }));
+        ;
         card(list)
+    }
+
+    /// Giro: automático, cuartos de vuelta a cada lado y efecto espejo.
+    fn rotation_row(&self) -> Element<'_, Message> {
+        let auto = self.options.rotation == Rotation::Auto;
+        let current = match self.options.rotation {
+            Rotation::Auto => "Automático".to_string(),
+            Rotation::Fixed(degrees) => format!("{degrees}°"),
+        };
+        let controls = row![
+            choice_button(text("Auto").size(13).into(), auto, Message::AutoRotation),
+            choice_button(icon(&self.icons.left), false, Message::Rotate { clockwise: false }),
+            choice_button(icon(&self.icons.right), false, Message::Rotate { clockwise: true }),
+            choice_button(
+                icon(if self.options.mirror { &self.icons.mirror_on } else { &self.icons.mirror }),
+                self.options.mirror,
+                Message::Mirror,
+            ),
+        ]
+        .spacing(4);
+        row![
+            column![text("Giro").size(15), text(current).size(12).color(MUTED)]
+                .spacing(2)
+                .width(Length::Fill),
+            inset(controls),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    /// Giro extra a cualquier ángulo. Se aplica al soltar el control.
+    fn angle_row(&self) -> Element<'_, Message> {
+        let mut controls = row![
+            slider(-180..=180, self.angle_draft, Message::AngleDrag)
+                .on_release(Message::AngleApply)
+                .width(Length::Fixed(150.0)),
+            text(format!("{}°", self.angle_draft)).size(13).width(Length::Fixed(42.0)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        if self.angle_draft != 0 {
+            controls = controls.push(small_button("Quitar", Message::AngleReset));
+        }
+        row![text("Ángulo").size(15), horizontal_space(), controls]
+            .spacing(12)
+            .align_y(Alignment::Center)
+            .into()
     }
 
     fn power_button(&self) -> Element<'_, Message> {
@@ -677,6 +751,89 @@ fn small_button<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
                 border: border::rounded(8),
                 ..button::Style::default()
             }
+        })
+        .into()
+}
+
+/// Iconos de los botones de giro, ya dibujados en el color que les toca.
+struct Icons {
+    left: image::Handle,
+    right: image::Handle,
+    mirror: image::Handle,
+    mirror_on: image::Handle,
+}
+
+impl Icons {
+    fn load() -> Icons {
+        Icons {
+            left: render_icon(ICON_LEFT, MUTED),
+            right: render_icon(ICON_RIGHT, MUTED),
+            mirror: render_icon(ICON_MIRROR, MUTED),
+            mirror_on: render_icon(ICON_MIRROR, ON_ACCENT),
+        }
+    }
+}
+
+/// Dibuja un icono SVG como imagen de un solo color. Se dibuja al cuádruple
+/// del tamaño en que se muestra para que se vea nítido en cualquier pantalla.
+fn render_icon(bytes: &[u8], color: Color) -> image::Handle {
+    use resvg::{tiny_skia, usvg};
+    const SIDE: u32 = 72;
+    let mut pixmap = tiny_skia::Pixmap::new(SIDE, SIDE).expect("tamaño de icono válido");
+    if let Ok(tree) = usvg::Tree::from_data(bytes, &usvg::Options::default()) {
+        let scale = SIDE as f32 / tree.size().width();
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(scale, scale),
+            &mut pixmap.as_mut(),
+        );
+    }
+    // Del dibujo solo se usa la transparencia; el color lo pone Ixtli.
+    let [red, green, blue, _] = color.into_rgba8();
+    let rgba: Vec<u8> = pixmap
+        .data()
+        .chunks_exact(4)
+        .flat_map(|pixel| [red, green, blue, pixel[3]])
+        .collect();
+    image::Handle::from_rgba(SIDE, SIDE, rgba)
+}
+
+fn icon<'a>(handle: &image::Handle) -> Element<'a, Message> {
+    image(handle.clone())
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .into()
+}
+
+/// Botón de un grupo de opciones; `selected` lo pinta de jade.
+fn choice_button<'a>(content: Element<'a, Message>, selected: bool, message: Message) -> Element<'a, Message> {
+    button(content)
+        .padding([6, 10])
+        .on_press(message)
+        .style(move |_, status| {
+            let (background, text_color) = match (selected, status) {
+                (true, _) => (JADE, ON_ACCENT),
+                (false, button::Status::Hovered | button::Status::Pressed) => (LINE, TEXT),
+                (false, _) => (INSET, MUTED),
+            };
+            button::Style {
+                background: Some(Background::Color(background)),
+                text_color,
+                border: border::rounded(8),
+                ..button::Style::default()
+            }
+        })
+        .into()
+}
+
+/// Fondo hundido para agrupar botones.
+fn inset<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding(4)
+        .style(|_| container::Style {
+            background: Some(Background::Color(INSET)),
+            border: border::rounded(11),
+            ..container::Style::default()
         })
         .into()
 }

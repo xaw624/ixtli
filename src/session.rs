@@ -65,9 +65,15 @@ impl Session {
             .arg(format!("--camera-size={}", options.quality.size()))
             .arg("--camera-fps=30")
             .arg(format!("--v4l2-sink={}", cam.path.display()))
-            .arg(format!("--capture-orientation={degrees}"))
+            .arg(format!(
+                "--capture-orientation={}",
+                options.capture_orientation(degrees)
+            ))
             // scrcpy no abre ventana: la vista previa la dibuja Ixtli.
             .arg("--no-window");
+        if options.angle != 0 {
+            command.arg(format!("--angle={}", options.angle.rem_euclid(360)));
+        }
         if options.mic {
             // El audio del teléfono se "reproduce" en la salida interna de
             // Ixtli; de ahí lo toma el micrófono virtual.

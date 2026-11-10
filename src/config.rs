@@ -44,7 +44,30 @@ pub enum Rotation {
     Fixed(u16),
 }
 
+impl Options {
+    /// Valor de `scrcpy --capture-orientation` para un giro de `degrees`.
+    ///
+    /// scrcpy aplica el espejo antes de girar; para que el espejo quede
+    /// sobre la imagen ya girada hay que pedirle el giro contrario.
+    pub fn capture_orientation(&self, degrees: u16) -> String {
+        if self.mirror {
+            format!("flip{}", (360 - degrees % 360) % 360)
+        } else {
+            (degrees % 360).to_string()
+        }
+    }
+}
+
 impl Rotation {
+    /// El giro fijo que resulta de dar un cuarto de vuelta más.
+    pub fn turned(self, clockwise: bool) -> Rotation {
+        let current = match self {
+            Rotation::Auto => 0,
+            Rotation::Fixed(degrees) => degrees % 360,
+        };
+        Rotation::Fixed((current + if clockwise { 90 } else { 270 }) % 360)
+    }
+
     /// Grados que hay que pedirle a scrcpy.
     ///
     /// `device_quarters` es cuánto está girado el teléfono (0 a 3, en cuartos
@@ -70,6 +93,10 @@ pub struct Options {
     pub facing: Facing,
     pub quality: Quality,
     pub rotation: Rotation,
+    /// Efecto espejo: voltea la imagen de izquierda a derecha.
+    pub mirror: bool,
+    /// Giro extra a cualquier ángulo, en grados (sentido del reloj).
+    pub angle: i16,
     /// Usar también el micrófono del teléfono.
     pub mic: bool,
     /// Mostrar la imagen de la cámara dentro de la ventana.
@@ -82,6 +109,8 @@ impl Default for Options {
             facing: Facing::Front,
             quality: Quality::Hd,
             rotation: Rotation::Fixed(0),
+            mirror: false,
+            angle: 0,
             mic: true,
             preview: true,
         }
@@ -112,6 +141,11 @@ pub fn save(options: &Options) {
     let _ = fs::write(path, serialize(options));
 }
 
+/// Deja el ángulo extra entre -180 y 180 grados.
+pub fn clamp_angle(angle: i16) -> i16 {
+    angle.clamp(-180, 180)
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "si"
@@ -122,7 +156,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nmicrofono={}\nvista_previa={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -135,6 +169,8 @@ fn serialize(o: &Options) -> String {
             Rotation::Auto => "auto".to_string(),
             Rotation::Fixed(degrees) => degrees.to_string(),
         },
+        yes_no(o.mirror),
+        o.angle,
         yes_no(o.mic),
         yes_no(o.preview),
     )
@@ -154,6 +190,8 @@ fn parse(text: &str) -> Options {
             ("giro", v @ ("0" | "90" | "180" | "270")) => {
                 o.rotation = Rotation::Fixed(v.parse().unwrap_or(0))
             }
+            ("espejo", v) => o.mirror = v == "si",
+            ("angulo", v) => o.angle = v.parse().map(clamp_angle).unwrap_or(0),
             ("microfono", v) => o.mic = v == "si",
             ("vista_previa", v) => o.preview = v == "si",
             _ => {}
@@ -172,6 +210,8 @@ mod tests {
             facing: Facing::Back,
             quality: Quality::FullHd,
             rotation: Rotation::Fixed(270),
+            mirror: true,
+            angle: -15,
             mic: false,
             preview: false,
         };
@@ -187,6 +227,19 @@ mod tests {
     #[test]
     fn ignores_garbage() {
         assert_eq!(parse("hola\ncamara=lateral\ngiro=45\n=\n"), Options::default());
+    }
+
+    #[test]
+    fn turning_and_mirror() {
+        assert_eq!(Rotation::Fixed(270).turned(true), Rotation::Fixed(0));
+        assert_eq!(Rotation::Fixed(0).turned(false), Rotation::Fixed(270));
+        assert_eq!(Rotation::Auto.turned(true), Rotation::Fixed(90));
+        let plain = Options::default();
+        let mirrored = Options { mirror: true, ..plain };
+        assert_eq!(plain.capture_orientation(90), "90");
+        assert_eq!(mirrored.capture_orientation(0), "flip0");
+        assert_eq!(mirrored.capture_orientation(90), "flip270");
+        assert_eq!(parse("angulo=999\n").angle, 180);
     }
 
     #[test]

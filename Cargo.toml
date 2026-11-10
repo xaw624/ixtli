@@ -15,6 +15,8 @@ categories = ["multimedia::video"]
 # Interfaz. Se usa el renderizador por software (tiny-skia) para no depender
 # de drivers de GPU: la ventana es pequeña y así funciona en cualquier equipo.
 iced = { version = "0.13", default-features = false, features = ["tiny-skia", "tokio", "image"] }
+# Dibuja los iconos SVG de los botones (misma versión que usa iced).
+resvg = { version = "0.42", default-features = false }
 ctrlc = { version = "3", features = ["termination"] }
 libc = "0.2"
 

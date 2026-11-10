@@ -12,8 +12,8 @@ cualquier otro programa.
 
 - No hay que instalar ninguna app en el teléfono.
 - Cámara frontal o trasera, en 720p o 1080p.
-- Giro de la imagen: fijo (0°, 90°, 180°, 270°) o automático según la posición del
-  teléfono.
+- Giro de la imagen: automático según la posición del teléfono, en cuartos de vuelta,
+  a un ángulo personalizado y con efecto espejo.
 - Vista previa dentro de la ventana, que se puede desacoplar a una ventana aparte.
 - Micrófono del teléfono como micrófono virtual.
 - Conexión por cable USB.
@@ -69,10 +69,18 @@ la cámara virtual.
 
 ### Girar la imagen
 
-En **Giro** eliges cuánto girar la imagen. Con **Auto**, Ixtli sigue la posición del
-teléfono: para eso activa el giro automático de pantalla en el teléfono y deja la
-pantalla encendida. Cada vez que cambia el giro, la cámara se reabre y la imagen se
-corta un par de segundos.
+En **Giro** hay cuatro botones:
+
+- **Auto**: Ixtli sigue la posición del teléfono. Para eso activa el giro automático
+  de pantalla en el teléfono y deja la pantalla encendida.
+- **Girar a la izquierda** y **girar a la derecha**: un cuarto de vuelta cada vez.
+- **Espejo**: voltea la imagen de izquierda a derecha.
+
+Con **Ángulo** giras la imagen a cualquier ángulo entre -180° y 180°; se aplica al
+soltar el control.
+
+Cada vez que cambia el giro, la cámara se reabre y la imagen se corta un par de
+segundos.
 
 ### Vista previa
 
@@ -88,6 +96,7 @@ ixtli estado                       # revisa si todo está listo
 ixtli encender                     # enciende; Ctrl+C para apagar
 ixtli encender --trasera --1080    # cámara trasera en 1080p
 ixtli encender --giro=90           # imagen girada 90°
+ixtli encender --espejo --angulo=15  # efecto espejo y 15° extra
 ixtli encender --sin-micro         # solo la cámara
 ixtli vista                        # ventana con la imagen de la cámara
 ixtli --help

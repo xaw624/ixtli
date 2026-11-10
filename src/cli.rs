@@ -26,6 +26,8 @@ Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
   --frontal | --trasera      Qué cámara del teléfono usar.
   --720 | --1080             Calidad del video.
   --giro=auto|0|90|180|270   Girar la imagen (auto sigue la posición del teléfono).
+  --espejo | --sin-espejo    Voltear la imagen como en un espejo.
+  --angulo=GRADOS            Giro extra a cualquier ángulo, de -180 a 180.
   --micro | --sin-micro      Usar o no el micrófono del teléfono.
 
   -h, --help                 Muestra esta ayuda.
@@ -135,6 +137,15 @@ fn start(flags: &[String]) -> ExitCode {
             "--trasera" => options.facing = Facing::Back,
             "--720" => options.quality = Quality::Hd,
             "--1080" => options.quality = Quality::FullHd,
+            "--espejo" => options.mirror = true,
+            "--sin-espejo" => options.mirror = false,
+            angle if angle.starts_with("--angulo=") => match angle["--angulo=".len()..].parse::<i16>() {
+                Ok(degrees) if (-180..=180).contains(&degrees) => options.angle = degrees,
+                _ => {
+                    eprintln!("El ángulo debe ser un número entre -180 y 180.");
+                    return ExitCode::from(2);
+                }
+            },
             "--micro" => options.mic = true,
             "--sin-micro" => options.mic = false,
             "--giro=auto" => options.rotation = Rotation::Auto,
