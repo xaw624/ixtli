@@ -86,7 +86,7 @@ Objetivo: dejar el WiFi probado con teléfonos reales y guardado en git.
 Listo cuando: los dos teléfonos se conectan sin cable desde la ventana y, si se pierde
 la red, Ixtli avisa con un mensaje claro.
 
-## Fase 1. Instalador `.deb` y publicaciones (hecho; falta publicarlo)
+## Fase 1. Instalador `.deb` y publicaciones (hecho)
 
 Objetivo: instalar Ixtli sin tener Rust.
 
@@ -102,13 +102,14 @@ Hecho:
   arma el `.deb`, lo instala en otro Debian 13 limpio y, con una etiqueta `v*`, lo
   publica en GitHub Releases junto con el binario suelto.
 - README en inglés (`README.en.md`).
-- Versión 0.2.0.
+- Versión 0.2.0, publicada el 10 de noviembre de 2026 en
+  https://github.com/xaw624/ixtli/releases/tag/v0.2.0. El flujo pasó completo,
+  incluida la instalación en un Debian 13 limpio.
+- Para subir cambios al flujo, la sesión de `gh` necesita el permiso `workflow`
+  (`gh auth refresh -h github.com -s workflow`).
 
 Falta:
 
-- Subir los cambios (`git push`) y ver que el flujo pase en GitHub: ahí se prueba la
-  instalación en un Debian limpio, que en esta computadora no se pudo probar.
-- Crear la etiqueta `v0.2.0` para publicar la primera versión.
 - Instalar el `.deb` en esta computadora y reiniciar, para ver que la cámara «Ixtli»
   aparece sola. Aquí ya hay una cámara virtual llamada «Celular», cargada a mano.
 - Probar en otra distribución (Ubuntu 24.04 trae scrcpy 1.25, que no sirve).
