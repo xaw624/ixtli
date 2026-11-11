@@ -10,8 +10,8 @@ Dónde quedó el trabajo:
 - **Fase 2 a medias:** existen `ixtli medir`, el **modo ahorro** (interruptor en la
   ventana y `--ahorro` en la terminal), la **batería a la vista**, **elegir lente** y
   **pantalla apagada**. Todo se probó solo con simuladores.
-- Todo hasta `036c68b` está subido a GitHub. Los commits del modo ahorro, la batería,
-  el lente y la pantalla apagada son **locales**, sin subir.
+- Todo hasta `8b22273` (modo ahorro, batería, lente y pantalla apagada) está subido a
+  GitHub. Todavía no hay versión 0.3 publicada.
 
 Lo siguiente, en orden:
 
