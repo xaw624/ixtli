@@ -582,12 +582,10 @@ impl Running {
     /// Con giro automático: el teléfono ya no está en la posición con la que
     /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos.
     ///
-    /// Con la pantalla apagada no se pregunta: el sensor de giro de Android
-    /// necesita la pantalla prendida, así que el giro se queda como estaba al
-    /// encender.
+    /// Con la pantalla apagada por Ixtli el sensor sigue activo (el teléfono
+    /// sigue despierto; comprobado en el moto g34).
     fn turned(&mut self) -> bool {
         if self.options.rotation != Rotation::Auto
-            || self.screen.as_mut().is_some_and(ScreenOff::running)
             || self.last_turn_check.elapsed() < Duration::from_millis(1500)
         {
             return false;

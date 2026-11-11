@@ -197,6 +197,8 @@ pub struct Options {
     /// número de cámara. `None` es el principal.
     pub lens: Option<u16>,
     /// Apagar la pantalla del teléfono mientras la cámara está encendida.
+    /// Siempre se apaga; solo `--pantalla-prendida` la deja prendida, y eso no
+    /// se guarda.
     pub screen_off: bool,
 }
 
@@ -212,7 +214,7 @@ impl Default for Options {
             preview: true,
             saver: false,
             lens: None,
-            screen_off: false,
+            screen_off: true,
         }
     }
 }
@@ -331,7 +333,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\npantalla_apagada={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -350,7 +352,6 @@ fn serialize(o: &Options) -> String {
         yes_no(o.preview),
         yes_no(o.saver),
         o.lens.map(|id| id.to_string()).unwrap_or_else(|| "principal".into()),
-        yes_no(o.screen_off),
     )
 }
 
@@ -374,7 +375,6 @@ fn parse(text: &str) -> Options {
             ("vista_previa", v) => o.preview = v == "si",
             ("ahorro", v) => o.saver = v == "si",
             ("lente", v) => o.lens = v.parse().ok(),
-            ("pantalla_apagada", v) => o.screen_off = v == "si",
             _ => {}
         }
     }
@@ -406,6 +406,8 @@ mod tests {
         };
         assert_eq!(parse(&serialize(&auto)), auto);
         assert_eq!(parse(&serialize(&Options::default())), Options::default());
+        // La pantalla se apaga siempre, aunque un archivo viejo diga que no.
+        assert!(parse("pantalla_apagada=no\n").screen_off);
     }
 
     #[test]

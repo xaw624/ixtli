@@ -7,72 +7,84 @@ Notas para retomar el proyecto en otra sesión. Actualizado el 10 de noviembre d
 Dónde quedó el trabajo:
 
 - **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
-- **Fase 2 a medias:** existen `ixtli medir`, el **modo ahorro** (interruptor en la
-  ventana y `--ahorro` en la terminal), la **batería a la vista**, **elegir lente** y
-  **pantalla apagada**. Todo se probó solo con simuladores.
-- Todo hasta `8b22273` (modo ahorro, batería, lente y pantalla apagada) está subido a
-  GitHub. Todavía no hay versión 0.3 publicada.
+- **Fase 2 a medias:** existen `ixtli medir`, el **modo ahorro**, la **batería a la
+  vista**, **elegir lente** y la **pantalla apagada**, que ahora es automática.
+- El 10 de noviembre se probó con el moto g34 por cable y por WiFi (ver «Primera
+  prueba con el teléfono» abajo). De ahí salieron tres arreglos, todavía **sin
+  probar en la ventana**: búsqueda propia en la red (mDNS), tamaños del modo ahorro
+  múltiplos de 8 y pantalla apagada siempre.
+- Todo hasta `95368a5` está subido a GitHub; los commits de los arreglos son locales.
+  Todavía no hay versión 0.3 publicada.
 
 Lo siguiente, en orden:
 
-1. **Probar el modo ahorro con el teléfono real** (ver la lista de abajo).
+1. **Probar los arreglos con el teléfono:** «Vincular con QR» en la red local (hay que
+   activar la Depuración inalámbrica: el 10 de noviembre estaba apagada), el modo
+   ahorro desde la ventana y girar el teléfono con la pantalla apagada.
 2. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
-   usuario; por teléfono son cuatro corridas de `ixtli medir 15` (720p y 1080p, por
-   WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS. La batería solo se
-   ve por WiFi, porque por cable el teléfono se carga. Después, `ixtli medir 15
-   --ahorro` por WiFi, en la tabla del modo ahorro.
+   usuario; por teléfono son cuatro corridas de `ixtli medir 15 --pantalla-prendida`
+   (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS.
+   La batería solo se ve por WiFi, porque por cable el teléfono se carga. Después,
+   las filas del modo ahorro y de la pantalla apagada.
 3. **Terminar la fase 2:** ya no queda nada opcional por programar. Los sondeos más
    lentos y la vista previa ligera sí cambian el gasto normal: van después de llenar
-   la tabla base, para ver la diferencia. Con la tabla llena se mide también
-   `--ahorro --pantalla-apagada`.
+   la tabla base, para ver la diferencia.
 4. Después, la fase 3 (motor de video propio).
 
-Pruebas del modo ahorro que faltan con el teléfono real:
+Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
 
-- Que `scrcpy --list-camera-sizes` responda en el A57 y el moto g34, y que Ixtli
-  elija un tamaño cercano a 480p (la ventana lo muestra bajo «Modo ahorro»). El
-  formato de la lista se tomó del código de scrcpy 3.3.4; si un teléfono la escribe
-  distinto, Ixtli se queda en 720p con 2 Mb/s.
-- Que la cámara acepte 15 cuadros/s y que la imagen se vea bien en Meet.
-- Prender y apagar el modo ahorro con la cámara en uso en Meet: cambia el tamaño de
-  la cámara virtual, igual que al girar.
-- Cómo se ve el interruptor nuevo en la ventana (no se revisó a la vista).
+- **Funcionó:** cambiar cámara, calidad, modo ahorro y micrófono en vivo (cada cambio
+  reabre scrcpy una vez); el giro automático; pasar del cable al WiFi; apagar la
+  pantalla (desbloquear la prende, y eso está bien). Ixtli usó como máximo 66 MB y
+  cerca de 22 % de un núcleo. Con la vista previa desacoplada llegó a 509 MB: revisar
+  en la «vista previa ligera».
+- **Modo ahorro:** el moto anuncia 960x540 y 1600x900, pero su cámara los rechaza al
+  abrirse (`configureStreamsLocked: Set of requested inputs/outputs not supported by
+  HAL`), en las dos cámaras y con cualquier número de cuadros. Los tamaños que sí
+  abren tienen ancho y alto múltiplos de 8, así que `saver_size` ahora solo elige
+  esos: en el moto queda 720x480 a 15 cuadros/s. Probado por cable desde la terminal:
+  llegan 15 cuadros/s a la cámara virtual con la pantalla apagada.
+- **Mensaje equivocado:** con ese rechazo scrcpy escribe también «Device
+  disconnected», y la ventana decía «revisa el cable». Ahora `explain` busca el
+  rechazo de la cámara en todo el registro (`camera_rejected` en `session.rs`) antes
+  que la conexión perdida.
+- **QR:** no funcionó y hubo que escribir la dirección a mano. Causa: el adb de
+  Debian 13 (34.0.5) viene **sin búsqueda mDNS** (`adb mdns check` no dice nada y
+  `adb mdns services` siempre sale vacío). Ahora Ixtli busca por su cuenta con la
+  biblioteca `mdns-sd` 0.21 (compila con Rust 1.85): `sys::browser()` escucha
+  `_adb-tls-connect` y `_adb-tls-pairing` desde la primera vez que hace falta, y
+  `mdns_services()` suma lo que vea un adb con mDNS. Las direcciones de la red de
+  casa van antes que las de la VPN. Falta probarlo con la Depuración inalámbrica
+  encendida.
+- **Pantalla apagada siempre:** el usuario no le vio utilidad como opción. Se quitó
+  el interruptor; la pantalla se apaga al encender la cámara. `--pantalla-prendida`
+  la deja prendida solo esa vez (ya no se guarda `pantalla_apagada` en
+  `opciones.conf`). Con la pantalla apagada por Ixtli el sensor de giro sigue activo
+  (`mEnabled=true` en el moto), así que se quitó la regla de dejar el giro fijo. Falta
+  girar el teléfono con la pantalla apagada y ver que la imagen lo siga.
+- **Sin explicar:** scrcpy se reinició tres veces con las mismas opciones (19:19:24,
+  19:19:45, 19:23:08). Las dos primeras eran con 960x540, así que seguramente eran
+  el rechazo de la cámara. La tercera fue por WiFi justo antes de que se cayera la
+  conexión. El teléfono apagó la Depuración inalámbrica en algún momento.
 
-Pruebas de la batería que faltan con el teléfono real:
+Pruebas que siguen pendientes con el teléfono real:
 
-- Que la ventana muestre el nivel bajo «Teléfono» («Batería: 87 %, cargando.») en los
-  dos teléfonos, por cable y por WiFi. No se revisó a la vista.
-- El aviso en ámbar bajo el estado cuando baja de 20 % por WiFi.
-
-Pruebas del lente que faltan con el teléfono real:
-
-- `ixtli lentes` en el A57 y el moto g34: cuántas cámaras muestra Android de cada
-  lado. Muchos teléfonos (sobre todo Samsung) esconden el gran angular a las apps;
-  entonces el renglón «Lente» no aparece y no hay nada que hacer desde scrcpy.
-- Que `--lente=N` abra de verdad ese lente y que el giro automático lo enderece
-  igual que al principal (se supone que el sensor está montado igual).
-- Cómo se ve el renglón «Lente» en la ventana (no se revisó a la vista).
-
-Pruebas de la pantalla apagada que faltan con el teléfono real (es lo más incierto):
-
-- **Que la cámara siga mandando video con la pantalla apagada**, en el A57 y en el
-  moto g34, por cable y por WiFi, durante 15 minutos o más. scrcpy apaga solo el
-  panel y el teléfono sigue despierto, pero no se ha probado con la cámara.
-- Que la pantalla se vuelva a prender al apagar la cámara, al cerrar Ixtli y al
-  desconectar el cable.
-- Que el teléfono no se bloquee solo (Ixtli pide `--screen-off-timeout` de un día,
-  que scrcpy regresa a su valor al cerrar). Revisar después en Ajustes que el tiempo
-  de espera de pantalla volvió a ser el de antes.
-- Qué pasa si se presiona el botón de encendido del teléfono con la pantalla apagada.
-- Si el sensor de giro sigue funcionando con el panel apagado. Si sí, se puede quitar
-  la regla de dejar el giro fijo.
+- Modo ahorro en el Galaxy A57: qué tamaño elige y que la cámara lo abra.
+- Batería: el aviso en ámbar bajo 20 % por WiFi, y cómo se ve en la ventana.
+- `ixtli lentes` en los dos teléfonos. Muchos (sobre todo Samsung) esconden el gran
+  angular a las apps; entonces el renglón «Lente» no aparece. Que `--lente=N` abra
+  ese lente y que el giro automático lo enderece igual.
+- Pantalla apagada durante 15 minutos o más, por cable y por WiFi, en los dos
+  teléfonos. Que se prenda al apagar la cámara, al cerrar Ixtli y al desconectar el
+  cable, y que en Ajustes el tiempo de espera de pantalla vuelva a ser el de antes.
 
 Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inestable):
 
 - WiFi en vivo: desconectar el cable y apagar el WiFi del teléfono con la cámara
   encendida; cerrar y reabrir Ixtli sin cable.
-- «Vincular con QR» en la red local. Solo se probó el código de 6 dígitos, por VPN
-  (Tailscale), y funcionó.
+- «Vincular con QR» en la red local, ya con la búsqueda propia (mDNS). El 10 de
+  noviembre falló porque el adb de Debian no busca en la red. El código de 6 dígitos
+  sí funcionó, por VPN (Tailscale).
 - Instalar el `.deb` en la computadora del usuario y reiniciar, para ver que la cámara
   «Ixtli» aparece sola. Hoy hay una cámara virtual «Celular» cargada a mano.
 - El botón «Activar» después de reiniciar la computadora.
@@ -100,15 +112,16 @@ moto g34 5G:
 - Giro: automático, cuartos de vuelta, espejo y ángulo personalizado.
 - Vista previa incrustada en la ventana y desacoplable (`ixtli vista`).
 - Modo terminal: `ixtli estado`, `ixtli encender`, `ixtli --encender`.
-- Modo ahorro (cerca de 480p, 15 cuadros/s, 2 Mb/s), probado solo con simuladores.
+- Modo ahorro (cerca de 480p, 15 cuadros/s, 2 Mb/s), probado con el moto g34.
 - Batería del teléfono en la ventana, con aviso bajo 20 %; probado solo con simuladores.
 - Elegir otro lente del mismo lado (`ixtli lentes`, `--lente=N`); probado solo con
   simuladores.
-- Apagar la pantalla del teléfono mientras la cámara está encendida; probado solo con
-  simuladores.
+- La pantalla del teléfono se apaga sola mientras la cámara está encendida; probado
+  con el moto g34 (`--pantalla-prendida` para dejarla prendida).
 - **WiFi:** «Conectar por WiFi» con el cable una vez
   (`adb tcpip`), probado con el moto g34; y «Vincular con QR» sin cable
-  (`adb pair` + mDNS, módulo `pairing.rs`), probado solo con un adb simulado.
+  (`adb pair` + búsqueda mDNS propia, módulos `pairing.rs` y `sys.rs`); el QR falta
+  probarlo en la red local.
 
 Cómo está hecho:
 
@@ -167,8 +180,9 @@ puede hacer cualquier día, en paralelo con las fases 0 a 3.
 Objetivo: dejar el WiFi probado con teléfonos reales y guardado en git.
 
 - Probar «Vincular con QR» en el moto g34 escaneando desde Depuración inalámbrica.
-  Si la tarjeta se queda en «Esperando…», revisar `adb mdns services`: algunas redes
-  bloquean los anuncios entre equipos.
+  El adb de Debian no busca en la red (mDNS), así que Ixtli busca por su cuenta
+  (`mdns-sd`). Si la tarjeta se queda en «Esperando…», puede ser que la red bloquee
+  los anuncios entre equipos.
 - Hecho y probado con el moto g34, también por VPN (Tailscale): vinculación con código de 6 dígitos, en la
   tarjeta de la ventana y con `ixtli vincular IP:PUERTO CÓDIGO`. Si el teléfono no se
   anuncia en la red (VPN), Ixtli pide su «Dirección IP y puerto» y la guarda en
@@ -221,26 +235,27 @@ motor propio.
   (`adb shell dumpsys battery`) y la CPU y memoria de Ixtli, scrcpy y adb. Probado
   solo con simuladores. **Falta llenar la tabla base** de `docs/mediciones.md` con los
   teléfonos reales (720p y 1080p, cable y WiFi) antes de tocar nada del ahorro.
-- **Modo ahorro.** Hecho, probado solo con simuladores: interruptor «Modo ahorro» en
+- **Modo ahorro.** Hecho, probado con el moto g34: interruptor «Modo ahorro» en
   la ventana, `--ahorro` / `--sin-ahorro` en la terminal y `ahorro=si` en
   `opciones.conf`. Ixtli lee una vez por teléfono `scrcpy --list-camera-sizes`
   (`sys::phone_cameras`, guarda la respuesta mientras Ixtli siga abierto) y elige
   (`Options::capture` en `config.rs`):
-  - tamaño: el más cercano a 480 de alto, de preferencia 16:9, siempre menos de 720p;
+  - tamaño: el más cercano a 480 de alto, de preferencia 16:9, siempre menos de 720p,
+    con ancho y alto múltiplos de 8 (el moto rechaza 960x540);
   - cuadros: 15 si la cámara los acepta, si no 24, si no 30;
   - tasa de bits: 2 Mb/s (scrcpy usa 8 Mb/s).
   Si no puede leer la lista, usa 720p con 2 Mb/s. Con ahorro se ignora la calidad
   elegida. `ixtli medir --ahorro` anota en la fila el tamaño que se usó.
-- **Pantalla apagada.** Hecho, probado solo con simuladores. Con la cámara como
+- **Pantalla apagada.** Hecho, probado con el moto g34. Con la cámara como
   fuente scrcpy no controla el teléfono (`Cannot request to turn screen off if
   control is disabled`), así que Ixtli abre un segundo scrcpy sin video ni audio
   (`ScreenOff` en `session.rs`: `--no-video --no-audio --no-window --turn-screen-off
   --screen-off-timeout=86400`). Se abre después de la cámara y se cierra antes; al
-  cerrarlo, la pantalla se prende. Si no se puede apagar, la cámara sigue y la
-  ventana lo dice. El giro automático se calcula al encender y se queda fijo mientras
-  la pantalla está apagada (no se cambia la opción guardada). Se guarda como
-  `pantalla_apagada=si`; en la terminal, `--pantalla-apagada` / `--pantalla-prendida`.
-  Cada cambio de opción reabre la cámara, y con eso la pantalla se prende un momento.
+  cerrarlo, la pantalla se prende. Si no se puede apagar, la cámara sigue; la
+  tarjeta «En vivo» solo dice que se apagó cuando de verdad se apagó. Desde el 10 de noviembre es automática: no hay
+  interruptor ni se guarda; `--pantalla-prendida` la deja prendida esa vez. El giro
+  automático sigue funcionando (el sensor sigue activo con el panel apagado). Cada
+  cambio de opción reabre la cámara, y con eso la pantalla se prende un momento.
 - **Vista previa ligera:** menos cuadros por segundo y se detiene sola cuando la
   ventana está minimizada o tapada.
 - **Batería a la vista.** Hecho, probado solo con simuladores. El motor lee
@@ -389,8 +404,8 @@ Metas provisionales, a confirmar con las mediciones de la fase 2:
 
 - Que la biblioteca Softcam siga funcionando en Windows 10 22H2 y qué formato de
   imagen pide. Alternativa: usar la cámara virtual de OBS.
-- Que la cámara del teléfono siga transmitiendo con la pantalla apagada, en el A57 y
-  en el moto g34.
+- Que la cámara del teléfono siga transmitiendo con la pantalla apagada en el A57
+  (en el moto g34 sí).
 - Que el adb para Windows encuentre los teléfonos por mDNS sin instalar nada más.
 - Cómo mandar el audio a un dispositivo concreto en Windows (¿scrcpy lo permite o lo
   reproduce Ixtli?).

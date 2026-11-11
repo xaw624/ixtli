@@ -46,9 +46,9 @@ Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
   --espejo | --sin-espejo    Voltear la imagen como en un espejo.
   --angulo=GRADOS            Giro extra a cualquier ángulo, de -180 a 180.
   --micro | --sin-micro      Usar o no el micrófono del teléfono.
-  --pantalla-apagada | --pantalla-prendida
-                             Apagar la pantalla del teléfono mientras la cámara está
-                             encendida (el giro automático se queda fijo).
+  --pantalla-prendida        No apagar la pantalla del teléfono. Normalmente se apaga
+                             mientras la cámara está encendida, para gastar menos
+                             batería (desbloquearlo la prende).
 
   -h, --help                 Muestra esta ayuda.
   -V, --version              Muestra la versión.";
@@ -486,7 +486,7 @@ fn measure_run(args: &[String]) -> ExitCode {
         },
         if options.mic { " + micro" } else { "" },
     );
-    let setup = if options.screen_off { format!("{setup} + pantalla apagada") } else { setup };
+    let setup = if options.screen_off { setup } else { format!("{setup} + pantalla prendida") };
     let setup = match capture.as_ref().and_then(|c| c.camera_id.as_ref()) {
         Some(id) => format!("{setup}, lente {id}"),
         None => setup,

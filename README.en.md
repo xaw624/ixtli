@@ -16,7 +16,8 @@ microphone you can pick in Meet, Zoom, Teams, OBS or any other program.
 - Power saving mode (about 480p at 15 frames per second) to use less battery.
 - The phone's battery level in the window, with a warning below 20 %.
 - Pick another lens (for example the ultra-wide), if the phone allows it.
-- Turn the phone screen off while the camera is on.
+- The phone screen turns off by itself while the camera is on, to save battery.
+  Unlocking the phone turns it back on.
 - Image rotation: automatic (follows the phone), quarter turns, a custom angle and a
   mirror effect.
 - Preview inside the window, which can be detached into its own window.
@@ -103,8 +104,7 @@ password to load the virtual camera.
 
 **Giro** (rotation) has four buttons:
 
-- **Auto**: Ixtli follows the phone's position. Turn on auto-rotate on the phone and
-  keep its screen on.
+- **Auto**: Ixtli follows the phone's position. Turn on auto-rotate on the phone.
 - **Rotate left** and **rotate right**: a quarter turn each time.
 - **Mirror**: flips the image left to right.
 
@@ -167,7 +167,7 @@ ixtli encender                     # turn on; Ctrl+C to turn off
 ixtli encender --trasera --1080    # back camera in 1080p
 ixtli encender --ahorro            # power saving mode: uses less battery
 ixtli lentes                       # list the phone cameras, to use --lente=N
-ixtli encender --pantalla-apagada  # turn the phone screen off meanwhile
+ixtli encender --pantalla-prendida # keep the phone screen on
 ixtli encender --giro=90           # image rotated 90°
 ixtli encender --espejo --angulo=15  # mirror effect and 15° extra
 ixtli encender --sin-micro         # camera only

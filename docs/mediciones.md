@@ -38,12 +38,22 @@ Qué significa cada columna:
 |-------|----------|----------|----------|-----|-----------|-------|-------|------------|
 
 Faltan por medir, en el Galaxy A57 y en el moto g34: 720p y 1080p, por cable y por WiFi.
+Desde la versión 0.3 la pantalla del teléfono se apaga sola; para que la tabla base sea
+como la 0.2, mide con `--pantalla-prendida` (por ejemplo `ixtli medir 15 --pantalla-prendida`).
 
 ## Modo ahorro (versión 0.3, en desarrollo)
 
 | Fecha | Teléfono | Conexión | Opciones | Min | Batería/h | Temp. | CPU % | Memoria MB |
 |-------|----------|----------|----------|-----|-----------|-------|-------|------------|
 
-Faltan por medir, en los dos teléfonos: `ixtli medir 15 --ahorro`, por WiFi (para la
-batería) y por cable. Después, `ixtli medir 15 --ahorro --pantalla-apagada` y
-`ixtli medir 15 --pantalla-apagada`, para ver cuánto ahorra cada cosa por separado. Hay que compararlo con la fila de 720p por WiFi de la tabla base.
+Faltan por medir, en los dos teléfonos, por WiFi (para la batería) y por cable:
+
+- `ixtli medir 15`: solo la pantalla apagada (la fila no dice «pantalla prendida»).
+- `ixtli medir 15 --ahorro --pantalla-prendida`: solo el modo ahorro.
+- `ixtli medir 15 --ahorro`: las dos cosas juntas.
+
+Hay que compararlas con la fila de 720p por WiFi de la tabla base.
+
+En el moto g34 el modo ahorro usa **720x480**: la cámara anuncia 960x540, pero no lo
+acepta al abrirse (tampoco 1600x900), así que Ixtli solo elige tamaños con ancho y
+alto múltiplos de 8.
