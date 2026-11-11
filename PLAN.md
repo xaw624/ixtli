@@ -120,9 +120,12 @@ teléfono además del A57 y del moto g34, por WiFi y con la ventana:
   la frontal, la trasera y los lentes 2 y 3: todos abren en 1920x1080 a 30 cuadros/s.
   Manda la imagen vertical (1080x1920) y el puente la acomoda en «Ixtli».
 - La pantalla se apaga sola con la cámara encendida.
-- Detalle: en cada cambio de cámara o lente, el scrcpy de la pantalla se cierra y
-  vuelve a arrancar, así que la pantalla se prende un momento y se apaga otra vez.
-  Con el giro no pasa, porque ahí la pantalla se queda apagada.
+- Detalle: en cada cambio de cámara o lente, el scrcpy de la pantalla se cerraba y
+  volvía a arrancar, así que la pantalla se prendía un momento. Arreglado el 11 de
+  noviembre: al cambiar una opción con la cámara encendida, el motor pasa el scrcpy
+  de la pantalla a la sesión nueva (como ya hacía con el giro), si es el mismo
+  teléfono. Probado con `adb` y `scrcpy` simulados (el de la pantalla arranca una
+  sola vez); falta verlo con el teléfono real.
 
 Pruebas que siguen pendientes con el teléfono real:
 

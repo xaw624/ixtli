@@ -438,9 +438,23 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 // Si el micrófono sigue en uso se conserva, para que la
                 // videollamada no lo pierda al cambiar una opción.
                 let keep_mic = options.mic && session.as_ref().is_some_and(|s| s.session.with_mic);
+                // La pantalla se queda apagada mientras se reabre con las
+                // opciones nuevas, como con el giro: si no, se prende un
+                // momento en cada cambio de cámara o de lente.
+                let screen = session
+                    .as_mut()
+                    .and_then(|running| running.screen.take().map(|screen| (running.serial.clone(), screen)));
                 end(&mut session, keep_mic);
                 match begin(&options, keep_mic, remembered.as_ref()) {
-                    Ok(started) => {
+                    Ok(mut started) => {
+                        if let Some((serial, screen)) = screen {
+                            if options.screen_off && started.serial == serial {
+                                started.screen = Some(screen);
+                                started.screen_tried = true;
+                            } else {
+                                screen.stop();
+                            }
+                        }
                         session = Some(started);
                         update(&shared, |state| {
                             state.phase = Phase::Starting;
@@ -448,11 +462,16 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                             state.error = None;
                         });
                     }
-                    Err(problem) => update(&shared, |state| {
-                        state.phase = Phase::Off;
-                        state.mic = false;
-                        state.error = Some(problem);
-                    }),
+                    Err(problem) => {
+                        if let Some((_, screen)) = screen {
+                            screen.stop();
+                        }
+                        update(&shared, |state| {
+                            state.phase = Phase::Off;
+                            state.mic = false;
+                            state.error = Some(problem);
+                        })
+                    }
                 }
             }
             Ok(Order::Stop) => {
