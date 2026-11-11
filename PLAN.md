@@ -112,13 +112,26 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   el rechazo de la cámara. La tercera fue por WiFi justo antes de que se cayera la
   conexión. El teléfono apagó la Depuración inalámbrica en algún momento.
 
+Prueba con un Galaxy A54 (SM-A546E, Android 16, 10 de noviembre de 2026), otro
+teléfono además del A57 y del moto g34, por WiFi y con la ventana:
+
+- Se conectó por WiFi y la cámara abrió en 1080p sin errores.
+- Anuncia cuatro cámaras: 0 trasera, 1 frontal, 2 trasera y 3 frontal. Se probaron
+  la frontal, la trasera y los lentes 2 y 3: todos abren en 1920x1080 a 30 cuadros/s.
+  Manda la imagen vertical (1080x1920) y el puente la acomoda en «Ixtli».
+- La pantalla se apaga sola con la cámara encendida.
+- Detalle: en cada cambio de cámara o lente, el scrcpy de la pantalla se cierra y
+  vuelve a arrancar, así que la pantalla se prende un momento y se apaga otra vez.
+  Con el giro no pasa, porque ahí la pantalla se queda apagada.
+
 Pruebas que siguen pendientes con el teléfono real:
 
-- Modo ahorro en el Galaxy A57: qué tamaño elige y que la cámara lo abra.
+- Modo ahorro en el Galaxy A57 y en el A54: qué tamaño elige y que la cámara lo abra.
 - Batería: el aviso en ámbar bajo 20 % por WiFi, y cómo se ve en la ventana.
-- `ixtli lentes` en los dos teléfonos. Muchos (sobre todo Samsung) esconden el gran
-  angular a las apps; entonces el renglón «Lente» no aparece. Que `--lente=N` abra
-  ese lente y que el giro automático lo enderece igual.
+- `ixtli lentes` en el A57 y en el moto g34. Muchos (sobre todo Samsung) esconden el
+  gran angular a las apps; entonces el renglón «Lente» no aparece. Que `--lente=N`
+  abra ese lente y que el giro automático lo enderece igual. En el A54 ya se probó
+  desde la ventana (ver arriba).
 - Pantalla apagada durante 15 minutos o más, por cable y por WiFi, en los dos
   teléfonos. Que se prenda al apagar la cámara, al cerrar Ixtli y al desconectar el
   cable, y que en Ajustes el tiempo de espera de pantalla vuelva a ser el de antes.
@@ -449,7 +462,7 @@ Metas provisionales, a confirmar con las mediciones de la fase 2:
 - Que la biblioteca Softcam siga funcionando en Windows 10 22H2 y qué formato de
   imagen pide. Alternativa: usar la cámara virtual de OBS.
 - Que la cámara del teléfono siga transmitiendo con la pantalla apagada en el A57
-  (en el moto g34 sí).
+  (en el moto g34 y en el Galaxy A54 sí).
 - Que el adb para Windows encuentre los teléfonos por mDNS sin instalar nada más.
 - Cómo mandar el audio a un dispositivo concreto en Windows (¿scrcpy lo permite o lo
   reproduce Ixtli?).
