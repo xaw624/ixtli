@@ -303,6 +303,22 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        // Mientras otro programa usa la cámara no se puede cambiar su tamaño.
+        let blocked = match &message {
+            Message::Quality(_) => self.quality_locked(),
+            Message::Facing(_)
+            | Message::Lens(_)
+            | Message::Saver(_)
+            | Message::AutoRotation
+            | Message::Rotate { .. }
+            | Message::AngleApply
+            | Message::AngleReset => self.image_locked(),
+            _ => false,
+        };
+        if blocked {
+            self.angle_draft = self.options.angle;
+            return Task::none();
+        }
         match message {
             Message::Tick | Message::Frame => {}
             Message::AutoRotation => {
@@ -457,6 +473,41 @@ impl App {
         sys::valid_addr(&self.pair_addr) && self.pair_code.len() == 6
     }
 
+    /// Otro programa (una videollamada) tiene abierta la cámara «Ixtli», y la
+    /// cámara virtual no deja cambiar su tamaño mientras tanto.
+    fn size_locked(&self) -> bool {
+        !self.state.cam_users.is_empty()
+    }
+
+    /// La calidad cambia el tamaño de «Ixtli».
+    fn quality_locked(&self) -> bool {
+        self.size_locked()
+    }
+
+    /// Sin la cámara interna (módulo viejo), la cámara, el modo ahorro, el
+    /// lente y el giro también cambian el tamaño.
+    fn image_locked(&self) -> bool {
+        self.size_locked() && !self.state.fixed_size
+    }
+
+    /// Aviso de por qué hay opciones bloqueadas.
+    fn lock_note(&self) -> Option<Element<'_, Message>> {
+        if !self.size_locked() {
+            return None;
+        }
+        let names: Vec<&str> = self.state.cam_users.iter().map(|name| program_name(name)).collect();
+        let what = if self.state.fixed_size { "la calidad" } else { "la cámara, la calidad, el modo ahorro o el giro" };
+        Some(
+            text(format!(
+                "{} está usando la cámara «Ixtli». Para cambiar {what}, apaga la cámara en la videollamada.",
+                names.join(" y ")
+            ))
+            .size(13)
+            .color(AMBER)
+            .into(),
+        )
+    }
+
     fn can_start(&self) -> bool {
         self.state.checked
             && self.state.deps.problem(self.options.mic).is_none()
@@ -576,6 +627,7 @@ impl App {
                     .height(Length::Fixed(230.0))
                     .content_fit(ContentFit::Contain)
                     .into(),
+                None if !self.state.fixed_size => note("Para ver la vista previa, actualiza la cámara virtual."),
                 None => note("Esperando la imagen…"),
             };
             (picture, small_button("Desacoplar", Message::Detach))
@@ -626,11 +678,21 @@ impl App {
         };
 
         let cam = match &state.cam {
-            Some(cam) => requirement(
+            Some(cam) if state.fixed_size => requirement(
                 Level::Good,
                 "Cámara virtual",
                 format!("Lista. Aparece como «{}».", cam.label),
                 None,
+            ),
+            // Módulo cargado por una versión vieja, sin la cámara interna.
+            Some(cam) => requirement(
+                Level::Pending,
+                "Cámara virtual",
+                format!(
+                    "Aparece como «{}», pero hay que actualizarla para que las videollamadas no la pierdan al cambiar algo (te pedirá tu contraseña; cierra antes las videollamadas).",
+                    cam.label
+                ),
+                (!live).then_some(("Actualizar", Message::LoadModule)),
             ),
             None if state.deps.module => requirement(
                 Level::Pending,
@@ -831,6 +893,7 @@ impl App {
                 &[(Facing::Front, "Frontal"), (Facing::Back, "Trasera")],
                 options.facing,
                 Message::Facing,
+                !self.image_locked(),
             ),
         );
         let quality = option_row(
@@ -839,9 +902,12 @@ impl App {
                 &[(Quality::Hd, "720p"), (Quality::FullHd, "1080p")],
                 options.quality,
                 Message::Quality,
+                !self.quality_locked(),
             ),
         );
-        let list = column![facing]
+        let list = column![]
+            .push_maybe(self.lock_note())
+            .push(facing)
             .push_maybe(self.lens_row())
             .push(quality)
             .push(self.saver_row())
@@ -878,7 +944,12 @@ impl App {
                 // El mismo número que muestra «ixtli lentes».
                 _ => (id.to_string(), Some(*id)),
             };
-            controls = controls.push(choice_button(text(label).size(13).into(), position == current, Message::Lens(lens)));
+            controls = controls.push(choice_button(
+                text(label).size(13).into(),
+                position == current,
+                Message::Lens(lens),
+                !self.image_locked(),
+            ));
         }
         let detail = match lenses[current].1.megapixels() {
             Some(mp) => format!("Sensor de {mp} MP. Prueba cuál es el gran angular."),
@@ -908,7 +979,7 @@ impl App {
             column![text("Modo ahorro").size(15), text(detail).size(12).color(MUTED)]
                 .spacing(2)
                 .width(Length::Fill),
-            toggler(self.options.saver).on_toggle(Message::Saver),
+            toggler(self.options.saver).on_toggle_maybe((!self.image_locked()).then_some(Message::Saver)),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -923,13 +994,14 @@ impl App {
             Rotation::Fixed(degrees) => format!("{degrees}°"),
         };
         let controls = row![
-            choice_button(text("Auto").size(13).into(), auto, Message::AutoRotation),
-            choice_button(icon(&self.icons.left), false, Message::Rotate { clockwise: false }),
-            choice_button(icon(&self.icons.right), false, Message::Rotate { clockwise: true }),
+            choice_button(text("Auto").size(13).into(), auto, Message::AutoRotation, !self.image_locked()),
+            choice_button(icon(&self.icons.left), false, Message::Rotate { clockwise: false }, !self.image_locked()),
+            choice_button(icon(&self.icons.right), false, Message::Rotate { clockwise: true }, !self.image_locked()),
             choice_button(
                 icon(if self.options.mirror { &self.icons.mirror_on } else { &self.icons.mirror }),
                 self.options.mirror,
                 Message::Mirror,
+                true,
             ),
         ]
         .spacing(4);
@@ -1199,12 +1271,14 @@ fn icon<'a>(handle: &image::Handle) -> Element<'a, Message> {
 }
 
 /// Botón de un grupo de opciones; `selected` lo pinta de jade.
-fn choice_button<'a>(content: Element<'a, Message>, selected: bool, message: Message) -> Element<'a, Message> {
+/// Sin `enabled`, no responde y se ve apagado.
+fn choice_button<'a>(content: Element<'a, Message>, selected: bool, message: Message, enabled: bool) -> Element<'a, Message> {
     button(content)
         .padding([6, 10])
-        .on_press(message)
+        .on_press_maybe(enabled.then_some(message))
         .style(move |_, status| {
             let (background, text_color) = match (selected, status) {
+                (true, button::Status::Disabled) => (LINE, MUTED),
                 (true, _) => (JADE, ON_ACCENT),
                 (false, button::Status::Hovered | button::Status::Pressed) => (LINE, TEXT),
                 (false, _) => (INSET, MUTED),
@@ -1243,6 +1317,7 @@ fn segmented<'a, T: Copy + PartialEq + 'a>(
     choices: &[(T, &'a str)],
     current: T,
     on_pick: impl Fn(T) -> Message,
+    enabled: bool,
 ) -> Element<'a, Message> {
     let mut buttons = row![].spacing(4);
     for &(value, label) in choices {
@@ -1250,9 +1325,10 @@ fn segmented<'a, T: Copy + PartialEq + 'a>(
         buttons = buttons.push(
             button(text(label).size(13))
                 .padding([6, 10])
-                .on_press(on_pick(value))
+                .on_press_maybe(enabled.then(|| on_pick(value)))
                 .style(move |_, status| {
                     let (background, text_color) = match (selected, status) {
+                        (true, button::Status::Disabled) => (LINE, MUTED),
                         (true, _) => (JADE, ON_ACCENT),
                         (false, button::Status::Hovered) => (LINE, TEXT),
                         (false, _) => (INSET, MUTED),
@@ -1274,4 +1350,17 @@ fn segmented<'a, T: Copy + PartialEq + 'a>(
             ..container::Style::default()
         })
         .into()
+}
+
+/// Nombre conocido de un programa a partir de su nombre de proceso.
+fn program_name(process: &str) -> &str {
+    match process {
+        p if p.starts_with("firefox") => "Firefox",
+        p if p.starts_with("chrom") || p.starts_with("google-chrome") => "Chrome",
+        "brave" => "Brave",
+        "obs" => "OBS",
+        "zoom" | "ZoomWebviewHost" => "Zoom",
+        p if p.starts_with("teams") => "Teams",
+        other => other,
+    }
 }

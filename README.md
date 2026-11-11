@@ -100,6 +100,14 @@ videollamada elige:
 La primera vez después de prender la computadora, Ixtli pide tu contraseña para activar
 la cámara virtual.
 
+La cámara **Ixtli** siempre tiene el mismo tamaño (el de la calidad elegida). Puedes
+cambiar de cámara, de lente, el modo ahorro o el giro en plena llamada: la imagen se
+acomoda, con franjas negras si hace falta, y la videollamada no pierde la cámara. Con la
+cámara apagada, la videollamada ve negro hasta que la vuelvas a encender. La calidad no
+se puede cambiar mientras una videollamada esté usando la cámara: Ixtli te avisa.
+
+También verás una cámara **Ixtli-interna**: es de uso interno, no la elijas.
+
 ### Girar la imagen
 
 En **Giro** hay cuatro botones:
@@ -184,11 +192,13 @@ ixtli --help
 ## Cómo funciona
 
 1. `scrcpy` captura la cámara del teléfono por USB o por WiFi (con la depuración
-   inalámbrica de Android o con `adb tcpip`) y la envía a una cámara virtual
+   inalámbrica de Android o con `adb tcpip`) y la envía a una cámara virtual interna
    creada con `v4l2loopback`.
-2. El audio del micrófono del teléfono se envía a una salida de audio interna que no
+2. Ixtli copia esa imagen a la cámara **Ixtli**, siempre del mismo tamaño, y manda
+   negro cuando la cámara está apagada.
+3. El audio del micrófono del teléfono se envía a una salida de audio interna que no
    suena en las bocinas.
-3. Un micrófono virtual toma lo que llega a esa salida, y así los demás programas lo
+4. Un micrófono virtual toma lo que llega a esa salida, y así los demás programas lo
    ven como un micrófono normal.
 
 Al apagar o cerrar Ixtli se cierra `scrcpy` y se quita el micrófono virtual.
@@ -201,6 +211,9 @@ Al apagar o cerrar Ixtli se cierra `scrcpy` y se quita el micrófono virtual.
   cuando hace falta.
 - En algunos navegadores hay que recargar la página de la videollamada para que
   aparezcan la cámara y el micrófono nuevos.
+- Si actualizas desde la versión 0.2, Ixtli te pide actualizar la cámara virtual una
+  vez (con tu contraseña y las videollamadas cerradas), o se actualiza sola al
+  reiniciar la computadora.
 
 ## Créditos
 

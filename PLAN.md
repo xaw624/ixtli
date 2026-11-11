@@ -15,6 +15,8 @@ Dónde quedó el trabajo:
   múltiplos de 8 y pantalla apagada siempre.
 - Todo hasta `95368a5` está subido a GitHub; los commits de los arreglos son locales.
   Todavía no hay versión 0.3 publicada.
+- **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
+  cámara» abajo. Hay que probarlo en Meet.
 
 Lo siguiente, en orden:
 
@@ -69,6 +71,43 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   reabrir la cámara por un giro, la pantalla se queda apagada. Probado por cable desde
   la terminal; falta ver en Meet que la cámara aparezca (el usuario dijo que Meet no
   la reconocía; quizá fue esta falla, o Meet se abrió con la cámara apagada).
+- **Meet perdía la cámara (resuelto el 10 de noviembre).** Tres causas, todas
+  comprobadas con el moto g34, un Firefox de prueba (oculto, perfil temporal) y
+  lectores de prueba:
+  1. **v4l2loopback 0.15 solo deja leer a un programa a la vez** (REQBUFS de captura
+     da EBUSY: «only exclusive ownership for each stream»). La vista previa de Ixtli
+     leía la cámara «Ixtli» y, al reabrirse la cámara, la tomaba antes que Firefox:
+     Meet decía «no puede acceder a tu cámara» y Firefox acumulaba una conexión por
+     reintento hasta el límite de 10 (`max_openers`). Ahora la vista previa no lee la
+     cámara: toma las imágenes del puente (en el mismo proceso) o de
+     `$XDG_RUNTIME_DIR/ixtli/vista.rgba` (la ventana suelta, que lo pide tocando
+     `vista-quiero`).
+  2. **Mientras alguien la lee, la cámara virtual no deja cambiar su tamaño.** Al
+     cambiar modo ahorro, calidad o giro, scrcpy fallaba. Ahora hay **tamaño fijo**:
+     el módulo crea dos cámaras (`devices=2 video_nr=10,11
+     card_label=Ixtli,Ixtli-interna exclusive_caps=1,1`); scrcpy escribe en la
+     interna y el puente (`relay.rs`) copia a «Ixtli» con el tamaño de la calidad
+     (1280x720 o 1920x1080), escalando con interpolación bilineal y franjas negras.
+     El puente se enciende con la primera sesión y sigue mientras Ixtli esté
+     abierto: con la cámara apagada manda negro a 10 cuadros/s, así Meet nunca
+     pierde la cámara. Escribe con `write()` después de `VIDIOC_S_FMT`. CPU de Ixtli
+     con el puente: 2 % en 720p, 4 % en 1080p, 7 % en modo ahorro (agranda).
+     La calidad se bloquea en la ventana mientras otro programa tiene abierta
+     «Ixtli» (`sys::cam_users` revisa `/proc/*/fd` cada 2 s). Sin la cámara interna
+     (módulo de la 0.2) se bloquea todo lo que cambia el tamaño, no hay vista previa
+     y la ventana pide «Actualizar» (recarga el módulo con pkexec).
+  3. **«Server connection failed» al encender:** dos scrcpy arrancaban a la vez (la
+     cámara y la lista de lentes, o la pantalla) y copiaban el mismo
+     `/data/local/tmp/scrcpy-server.jar`; el que arrancaba moría (FATAL en
+     app_process). Ahora hay un turno (`sys::scrcpy_turn`, un flock en
+     `$XDG_RUNTIME_DIR/ixtli/scrcpy.lock`, también entre dos Ixtli) que dura hasta que
+     el servidor escribe su primera línea «[server]». Además el scrcpy de la
+     pantalla usa los puertos 27300 a 27399 y arranca con la cámara ya en vivo.
+  Pruebas hechas: 8 encendidos seguidos alternando modo ahorro, 6 sin pausa, un
+  lector abierto mientras se corta el video del teléfono (sigue recibiendo negro),
+  Firefox con la ventana y la vista previa abiertas, y dos Ixtli a la vez (el segundo
+  avisa y no estorba). Falta probarlo en Meet de verdad: apagar y prender, modo
+  ahorro y giro en plena llamada, y ver el aviso de la calidad bloqueada.
 - **Sin explicar:** scrcpy se reinició tres veces con las mismas opciones (19:19:24,
   19:19:45, 19:23:08). Las dos primeras eran con 960x540, así que seguramente eran
   el rechazo de la cámara. La tercera fue por WiFi justo antes de que se cayera la
@@ -301,7 +340,9 @@ Linux no cambia nada a la vista, salvo que el giro deja de cortar la imagen.
    rápido de probar en los dos sistemas; medir CPU y retraso, y solo si hace falta
    cambiarlo por un decodificador dentro de Ixtli.
 3. **Salida:** escribir los cuadros en v4l2loopback con un tamaño fijo, rellenando
-   con negro lo que sobre.
+   con negro lo que sobre. **Hecho antes** con el puente (`relay.rs`), leyendo de la
+   cámara interna donde escribe scrcpy; el motor propio solo cambia de dónde salen
+   los cuadros.
 4. **Giro, espejo y ángulo dentro de Ixtli,** sin reabrir la cámara.
 5. **Pausa automática:** v4l2loopback avisa cuántos programas están usando la cámara.
    Sin ninguno durante unos segundos, Ixtli apaga la cámara del teléfono y manda una

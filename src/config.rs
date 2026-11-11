@@ -33,6 +33,14 @@ impl Quality {
             Quality::FullHd => "1920x1080",
         }
     }
+
+    /// Tamaño fijo de la cámara «Ixtli» con esta calidad.
+    pub fn frame(self) -> (usize, usize) {
+        match self {
+            Quality::Hd => (1280, 720),
+            Quality::FullHd => (1920, 1080),
+        }
+    }
 }
 
 /// Lo que se le pide a la cámara del teléfono en una sesión.

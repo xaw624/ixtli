@@ -7,9 +7,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::audio;
-use crate::config::{self, Capture, Options, Remembered, Rotation};
+use crate::config::{self, Capture, Options, Quality, Remembered, Rotation};
 use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
+use crate::relay::Relay;
 use crate::session::{ScreenOff, Session, LOST_WIFI};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, PhoneCamera, VirtualCam};
 
@@ -19,6 +20,21 @@ const RECONNECT_EVERY: Duration = Duration::from_secs(10);
 /// Cada cuánto se lee la batería del teléfono. Cada lectura abre un proceso
 /// en el teléfono, y la batería cambia despacio.
 const BATTERY_EVERY: Duration = Duration::from_secs(60);
+/// Cada cuánto se revisa qué programas usan la cámara «Ixtli».
+const USERS_EVERY: Duration = Duration::from_secs(2);
+
+/// El puente hacia la cámara «Ixtli» (ver `relay.rs`). Se enciende con la
+/// primera sesión y sigue mientras Ixtli esté abierto, para que las
+/// videollamadas no pierdan la cámara al apagarla o al cambiar algo.
+static RELAY: Mutex<Option<Relay>> = Mutex::new(None);
+
+/// Deja el puente escribiendo en «Ixtli» con el tamaño de `quality`.
+fn relay_to(public: &VirtualCam, internal: &VirtualCam, quality: Quality) {
+    let mut relay = RELAY.lock().unwrap();
+    relay
+        .get_or_insert_with(|| Relay::start(public.clone(), internal.clone()))
+        .set_size(Some(quality.frame()));
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -47,6 +63,13 @@ pub struct Snapshot {
     pub cameras: Option<Vec<PhoneCamera>>,
     /// La pantalla del teléfono está apagada por Ixtli en la sesión en vivo.
     pub screen_off: bool,
+    /// Existe la cámara interna: «Ixtli» tiene un tamaño fijo y solo la
+    /// calidad lo cambia. Sin ella, cada cambio de imagen cambia el tamaño.
+    pub fixed_size: bool,
+    /// Otros programas que tienen abierta la cámara «Ixtli» (por ejemplo, el
+    /// navegador de una videollamada). Mientras tanto no se puede cambiar su
+    /// tamaño.
+    pub cam_users: Vec<String>,
     /// Último problema, ya explicado para el usuario.
     pub error: Option<String>,
     pub wifi: WifiStatus,
@@ -199,6 +222,8 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     let mut battery_read: Option<(String, Instant)> = None;
     // A qué teléfono se le pidió ya la lista de cámaras.
     let mut cameras_asked: Option<String> = None;
+    // Cuándo se revisó por última vez quién usa la cámara «Ixtli».
+    let mut users_checked: Option<Instant> = None;
 
     loop {
         // --- Revisar el sistema -------------------------------------------
@@ -264,12 +289,6 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     });
                 }
                 None if running.session.is_live() => {
-                    // Se apaga la pantalla hasta ahora: si los dos scrcpy
-                    // arrancan juntos, se pueden estorbar.
-                    if running.options.screen_off && !running.screen_tried {
-                        running.screen_tried = true;
-                        running.screen = ScreenOff::start(&running.serial).ok();
-                    }
                     let capture = running.capture.clone();
                     let screen_off = running.screen.as_mut().is_some_and(ScreenOff::running);
                     update(&shared, |state| {
@@ -277,6 +296,12 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                         state.capture = Some(capture);
                         state.screen_off = screen_off;
                     });
+                    // La pantalla se apaga hasta ahora, con la cámara ya en
+                    // vivo: si los dos scrcpy arrancan juntos, se estorban.
+                    if running.options.screen_off && !running.screen_tried {
+                        running.screen_tried = true;
+                        running.screen = ScreenOff::start(&running.serial).ok();
+                    }
                     // Giro automático: si el teléfono cambió de posición, se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
                     if running.turned() {
@@ -392,6 +417,14 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             }
         }
 
+        // --- Quién usa la cámara «Ixtli» -----------------------------------
+        if users_checked.is_none_or(|at| at.elapsed() >= USERS_EVERY) {
+            let cam = shared.lock().unwrap().cam.clone();
+            let users = cam.as_ref().map(sys::cam_users).unwrap_or_default();
+            update(&shared, |state| state.cam_users = users);
+            users_checked = Some(Instant::now());
+        }
+
         // --- Esperar la siguiente orden -----------------------------------
         let phase = shared.lock().unwrap().phase;
         let pause = match (&session, phase) {
@@ -431,7 +464,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 });
             }
             Ok(Order::LoadModule) => {
-                let result = if sys::virtual_cam().is_some() {
+                let result = if sys::virtual_cam().is_some() && sys::internal_cam().is_some() {
                     Ok(())
                 } else {
                     sys::load_module().map(|_| ())
@@ -559,9 +592,11 @@ fn look_for_phone(shared: &Mutex<Snapshot>, has_adb: bool, remembered: Option<&R
             .any(|device| device.state == DeviceState::Ready)
     });
     let cam = sys::virtual_cam();
+    let fixed_size = sys::internal_cam().is_some();
     update(shared, |state| {
         state.phone = phone;
         state.cam = cam;
+        state.fixed_size = fixed_size;
         state.wifi.connected = connected;
         if connected {
             state.wifi.problem = None;
@@ -658,11 +693,21 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             Some(cam) => cam,
             None => sys::load_module()?,
         };
-        if cam.streaming() {
+        // Con la cámara interna, scrcpy escribe ahí y el puente copia a
+        // «Ixtli» con tamaño fijo. Sin ella (módulo viejo), scrcpy escribe
+        // directo en «Ixtli».
+        let internal = sys::internal_cam();
+        let sink = internal.clone().unwrap_or_else(|| cam.clone());
+        // Otro programa (u otro Ixtli) ya manda video: no se le estorba.
+        let relay_here = RELAY.lock().unwrap().is_some();
+        if sink.streaming() || (internal.is_some() && !relay_here && cam.streaming()) {
             return Err(format!(
-                "La cámara virtual «{}» ya está recibiendo video de otro programa (¿scrcpy abierto en una terminal?). Ciérralo e intenta otra vez.",
+                "La cámara virtual «{}» ya está recibiendo video de otro programa (¿otro Ixtli, o scrcpy abierto en una terminal?). Ciérralo e intenta otra vez.",
                 cam.label
             ));
+        }
+        if let Some(internal) = &internal {
+            relay_to(&cam, internal, options.quality);
         }
         if options.mic && !mic_ready {
             audio::create()?;
@@ -675,7 +720,7 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
         // El modo ahorro y el lente necesitan saber qué cámaras hay.
         let cameras = options.needs_cameras().then(|| sys::phone_cameras(serial)).flatten();
         let capture = options.capture(cameras.as_deref());
-        Session::start(serial, link, &cam, options, &capture, degrees).map(|session| (session, capture))
+        Session::start(serial, link, &sink, options, &capture, degrees).map(|session| (session, capture))
     })();
     match opened {
         Ok((session, capture)) => Ok(Running {

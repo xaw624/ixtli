@@ -1,18 +1,15 @@
-//! Vista previa: lee la imagen que está llegando a la cámara virtual.
+//! Vista previa: la imagen que el puente (`relay.rs`) manda a la cámara
+//! «Ixtli», así que lo que se ve aquí es lo mismo que verán los demás.
 //!
-//! Ixtli se conecta a la cámara virtual como cualquier otro programa (igual
-//! que lo haría una videollamada), así que lo que se ve aquí es lo mismo que
-//! verán los demás.
+//! No lee la cámara virtual: v4l2loopback solo deja leer a un programa a la
+//! vez, y si la tomaba Ixtli, la videollamada se quedaba sin cámara.
 
-use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read};
-use std::os::unix::fs::OpenOptionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::sys;
+use crate::{relay, sys};
 
 /// Lado más largo de la imagen de la vista previa, en pixeles.
 const MAX_SIDE: usize = 640;
@@ -70,63 +67,27 @@ impl Drop for Preview {
 }
 
 fn watch(shared: &Shared) {
-    let mut number = 0;
     while !shared.closed.load(Ordering::Relaxed) {
-        let source = sys::virtual_cam()
-            .filter(|_| shared.wanted.load(Ordering::Relaxed))
-            .filter(|cam| cam.streaming())
-            .and_then(|cam| Some((cam.frame_size()?, cam)));
-        let Some(((width, height), cam)) = source else {
-            *shared.latest.lock().unwrap() = None;
-            thread::sleep(Duration::from_millis(300));
+        let wanted = shared.wanted.load(Ordering::Relaxed);
+        // Con el puente en este proceso, la imagen sale de él.
+        if relay::active() {
+            relay::want_preview(wanted);
+            *shared.latest.lock().unwrap() = if wanted { relay::latest() } else { None };
+            thread::sleep(Duration::from_millis(60));
             continue;
-        };
-        // Sin bloqueo: si la cámara se apaga, la lectura no se queda colgada.
-        let Ok(mut device) = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&cam.path)
-        else {
-            thread::sleep(Duration::from_millis(500));
-            continue;
-        };
-        let mut raw = vec![0u8; width * height * 3 / 2];
-        // Se lee hasta que cambie algo: se apaga, se gira o ya nadie la ve.
-        while !shared.closed.load(Ordering::Relaxed)
-            && shared.wanted.load(Ordering::Relaxed)
-            && cam.streaming()
-            && cam.frame_size() == Some((width, height))
-        {
-            match read_frame(&mut device, &mut raw) {
-                Some(true) => {
-                    number += 1;
-                    let frame = convert(&raw, width, height, number);
-                    *shared.latest.lock().unwrap() = Some(Arc::new(frame));
-                    // Unas 15 imágenes por segundo bastan para una vista previa.
-                    thread::sleep(Duration::from_millis(60));
-                }
-                Some(false) => thread::sleep(Duration::from_millis(30)),
-                None => break,
-            }
         }
-    }
-}
-
-/// Lee una imagen completa. `Some(false)`: todavía no hay una nueva.
-/// `None`: la cámara dejó de servir y hay que volver a abrirla.
-fn read_frame(device: &mut File, raw: &mut [u8]) -> Option<bool> {
-    match device.read(raw) {
-        Ok(read) if read == raw.len() => Some(true),
-        Ok(_) => Some(false),
-        Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
-            Some(false)
-        }
-        Err(_) => None,
+        relay::want_preview(false);
+        // Si el puente es de otro proceso de Ixtli (por ejemplo, esta es la
+        // ventana suelta), deja la imagen en memoria. Sin cámara interna
+        // (módulo viejo) no hay puente ni vista previa: hay que actualizarla.
+        let frame = if wanted && sys::internal_cam().is_some() { relay::shared_frame() } else { None };
+        *shared.latest.lock().unwrap() = frame.map(Arc::new);
+        thread::sleep(Duration::from_millis(if wanted { 60 } else { 300 }));
     }
 }
 
 /// Convierte YU12 (YUV 4:2:0 por planos) a RGBA, reduciendo el tamaño.
-fn convert(raw: &[u8], width: usize, height: usize, number: u64) -> Frame {
+pub fn convert(raw: &[u8], width: usize, height: usize, number: u64) -> Frame {
     let step = width.max(height).div_ceil(MAX_SIDE).max(1);
     let (out_width, out_height) = (width / step, height / step);
     let (u_plane, v_plane) = (width * height, width * height + (width / 2) * (height / 2));

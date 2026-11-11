@@ -12,6 +12,11 @@ use crate::config::Facing;
 /// Etiqueta que Ixtli le pone a la cámara virtual cuando la crea.
 pub const CAM_LABEL: &str = "Ixtli";
 const CAM_NUMBER: u32 = 10;
+/// Cámara virtual interna: scrcpy escribe aquí y el puente (`relay.rs`) copia
+/// el video a «Ixtli» con un tamaño fijo. Sin espacios en el nombre, porque
+/// va en las opciones del módulo.
+pub const INTERNAL_LABEL: &str = "Ixtli-interna";
+const INTERNAL_NUMBER: u32 = 11;
 
 /// Ixtli usa opciones de scrcpy (girar la imagen, no abrir ventana) que
 /// existen desde la versión 3.0.
@@ -760,6 +765,7 @@ pub fn phone_cameras(serial: &str) -> Option<Vec<PhoneCamera>> {
     if let Some((_, cameras)) = known.iter().find(|(id, _)| id == serial) {
         return Some(cameras.clone());
     }
+    let _turn = scrcpy_turn();
     let output = output_for(
         std::ffi::OsStr::new("scrcpy"),
         &["-s", serial, "--list-camera-sizes"],
@@ -830,6 +836,49 @@ fn parse_cameras(text: &str) -> Vec<PhoneCamera> {
 }
 
 // ---------------------------------------------------------------------------
+// Turno para arrancar scrcpy
+// ---------------------------------------------------------------------------
+
+/// Carpeta en memoria para los archivos de trabajo de Ixtli.
+pub fn runtime_dir() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(dir) => PathBuf::from(dir).join("ixtli"),
+        // SAFETY: getuid no falla.
+        None => std::env::temp_dir().join(format!("ixtli-{}", unsafe { libc::getuid() })),
+    }
+}
+
+/// El turno de un scrcpy que está arrancando. Se suelta al soltar el valor.
+pub struct ScrcpyTurn {
+    _lock: fs::File,
+}
+
+/// Espera su turno para arrancar un scrcpy (como mucho 20 segundos).
+///
+/// Cada scrcpy copia su programa al mismo archivo del teléfono
+/// (`/data/local/tmp/scrcpy-server.jar`) y lo arranca. Si otro lo está
+/// copiando en ese momento, Android cierra el que arranca (error FATAL en
+/// app_process) y scrcpy dice «Server connection failed». Por eso solo
+/// arranca uno a la vez, aunque haya dos Ixtli abiertos: el turno es un
+/// candado de archivo (flock).
+pub fn scrcpy_turn() -> Option<ScrcpyTurn> {
+    let dir = runtime_dir();
+    let _ = fs::create_dir_all(&dir);
+    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("scrcpy.lock")).ok()?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        // SAFETY: el descriptor es válido mientras exista `lock`.
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Some(ScrcpyTurn { _lock: lock });
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cámara virtual (v4l2loopback)
 // ---------------------------------------------------------------------------
 
@@ -872,52 +921,80 @@ fn parse_format(format: &str) -> Option<(usize, usize)> {
     (width > 0 && height > 0 && width <= 8192 && height <= 8192).then_some((width, height))
 }
 
-/// Busca una cámara virtual ya creada. Prefiere la que creó Ixtli.
+/// Busca una cámara virtual ya creada (no la interna). Prefiere la que creó Ixtli.
 pub fn virtual_cam() -> Option<VirtualCam> {
-    let mut cams: Vec<(u32, VirtualCam)> = fs::read_dir("/sys/devices/virtual/video4linux")
-        .ok()?
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            let number: u32 = name.strip_prefix("video")?.parse().ok()?;
-            let sysfs = entry.path();
-            // "max_openers" solo existe en dispositivos de v4l2loopback.
-            if !sysfs.join("max_openers").exists() {
-                return None;
-            }
-            let label = fs::read_to_string(sysfs.join("name")).ok()?.trim().to_string();
-            let path = PathBuf::from(format!("/dev/{name}"));
-            Some((number, VirtualCam { path, label, sysfs }))
-        })
-        .collect();
+    let mut cams = loopback_cams().0;
     cams.sort_by_key(|(number, cam)| (cam.label != CAM_LABEL, *number));
     cams.into_iter().next().map(|(_, cam)| cam)
 }
 
-/// Comando para activar la cámara virtual a mano.
-pub fn module_command() -> String {
-    format!("sudo modprobe v4l2loopback video_nr={CAM_NUMBER} card_label={CAM_LABEL} exclusive_caps=1")
+/// Las cámaras de v4l2loopback (sin la interna), y la interna aparte.
+fn loopback_cams() -> (Vec<(u32, VirtualCam)>, Option<VirtualCam>) {
+    let Ok(entries) = fs::read_dir("/sys/devices/virtual/video4linux") else {
+        return (Vec::new(), None);
+    };
+    let mut cams = Vec::new();
+    let mut internal = None;
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().into_string().ok() else { continue };
+        let Some(number) = name.strip_prefix("video").and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let sysfs = entry.path();
+        // "max_openers" solo existe en dispositivos de v4l2loopback.
+        if !sysfs.join("max_openers").exists() {
+            continue;
+        }
+        let Ok(label) = fs::read_to_string(sysfs.join("name")) else { continue };
+        let cam = VirtualCam { path: PathBuf::from(format!("/dev/{name}")), label: label.trim().to_string(), sysfs };
+        if cam.label == INTERNAL_LABEL {
+            internal = Some(cam);
+        } else {
+            cams.push((number, cam));
+        }
+    }
+    (cams, internal)
 }
 
-/// Carga el módulo v4l2loopback pidiendo la contraseña con una ventana (pkexec).
+/// La cámara virtual interna, si el módulo se cargó con ella.
+pub fn internal_cam() -> Option<VirtualCam> {
+    loopback_cams().1
+}
+
+/// Las opciones del módulo: «Ixtli» y la interna.
+fn module_options() -> [String; 4] {
+    [
+        "devices=2".to_string(),
+        format!("video_nr={CAM_NUMBER},{INTERNAL_NUMBER}"),
+        format!("card_label={CAM_LABEL},{INTERNAL_LABEL}"),
+        "exclusive_caps=1,1".to_string(),
+    ]
+}
+
+/// Comando para activar la cámara virtual a mano.
+pub fn module_command() -> String {
+    format!("sudo modprobe v4l2loopback {}", module_options().join(" "))
+}
+
+/// Carga el módulo v4l2loopback pidiendo la contraseña con una ventana
+/// (pkexec). Si ya estaba cargado sin la cámara interna, lo vuelve a cargar.
 pub fn load_module() -> Result<VirtualCam, String> {
     let manual = format!("Actívala a mano con: {}", module_command());
     let modprobe = which("modprobe").ok_or_else(|| format!("No encontré modprobe. {manual}"))?;
     let pkexec = which("pkexec").ok_or_else(|| format!("No encontré pkexec. {manual}"))?;
-    let video_nr = format!("video_nr={CAM_NUMBER}");
-    let card_label = format!("card_label={CAM_LABEL}");
-    let args = [
-        modprobe.to_str().unwrap_or("modprobe"),
-        "v4l2loopback",
-        &video_nr,
-        &card_label,
-        "exclusive_caps=1",
-    ];
-    match run(pkexec, &args) {
+    let modprobe = modprobe.to_str().unwrap_or("modprobe").to_string();
+    let load = format!("{modprobe} v4l2loopback {}", module_options().join(" "));
+    let loaded = Path::new("/sys/module/v4l2loopback").exists();
+    let script = if loaded { format!("{modprobe} -r v4l2loopback && {load}") } else { load };
+    match run(pkexec, &["/bin/sh", "-c", &script]) {
         Ok(_) => {}
         // 126: se canceló la ventana. 127: contraseña incorrecta o sin permiso.
         Err(Failure { code: Some(126 | 127), .. }) => {
             return Err("No se dio permiso de administrador para activar la cámara virtual.".into())
+        }
+        Err(failure) if loaded && failure.message.to_lowercase().contains("in use") => {
+            return Err(
+                "La cámara virtual está abierta en otro programa. Cierra las videollamadas (o el navegador) e intenta otra vez."
+                    .into(),
+            )
         }
         Err(failure) => {
             return Err(format!(
@@ -928,12 +1005,36 @@ pub fn load_module() -> Result<VirtualCam, String> {
     }
     // El dispositivo tarda un instante en aparecer con sus permisos.
     for _ in 0..20 {
-        if let Some(cam) = virtual_cam() {
+        if let (Some(cam), Some(_)) = (virtual_cam(), internal_cam()) {
             return Ok(cam);
         }
         thread::sleep(Duration::from_millis(100));
     }
-    Err("El módulo se cargó, pero la cámara virtual no apareció.".into())
+    virtual_cam().ok_or_else(|| "El módulo se cargó, pero la cámara virtual no apareció.".into())
+}
+
+/// Programas (aparte de Ixtli y scrcpy) que tienen abierta la cámara, por
+/// ejemplo el navegador de una videollamada. Sin repetir nombres.
+pub fn cam_users(cam: &VirtualCam) -> Vec<String> {
+    let me = std::process::id();
+    let mut users: Vec<String> = Vec::new();
+    let Ok(processes) = fs::read_dir("/proc") else { return users };
+    for process in processes.flatten() {
+        let Some(pid) = process.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        if pid == me {
+            continue;
+        }
+        let Ok(fds) = fs::read_dir(process.path().join("fd")) else { continue };
+        if !fds.flatten().any(|fd| fs::read_link(fd.path()).is_ok_and(|target| target == cam.path)) {
+            continue;
+        }
+        let name = fs::read_to_string(process.path().join("comm")).unwrap_or_default().trim().to_string();
+        if name.is_empty() || name == "ixtli" || name == "scrcpy" || users.contains(&name) {
+            continue;
+        }
+        users.push(name);
+    }
+    users
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ mod pairing;
 mod gui;
 mod measure;
 mod preview;
+mod relay;
 mod session;
 mod sys;
 

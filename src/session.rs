@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::audio;
 use crate::config::{Capture, Options};
-use crate::sys::{Link, VirtualCam};
+use crate::sys::{self, Link, VirtualCam};
 
 const LOG_LINES: usize = 200;
 
@@ -25,12 +25,17 @@ struct Log {
     last_error: Option<String>,
     last_warning: Option<String>,
     sink_started: bool,
+    /// El servidor de scrcpy ya arrancó en el teléfono.
+    server_started: bool,
 }
 
 impl Log {
     fn push(&mut self, line: String) {
         if line.contains("v4l2 sink started") {
             self.sink_started = true;
+        }
+        if line.contains("[server]") {
+            self.server_started = true;
         }
         if line.contains("ERROR") {
             self.last_error = Some(line.clone());
@@ -111,6 +116,7 @@ impl Session {
                 Ok(())
             });
         }
+        let turn = sys::scrcpy_turn();
         let mut child = command
             .spawn()
             .map_err(|e| format!("No se pudo abrir scrcpy: {e}"))?;
@@ -122,6 +128,8 @@ impl Session {
         if let Some(stderr) = child.stderr.take() {
             pump(stderr, log.clone());
         }
+        wait_for_server(&mut child, &log);
+        drop(turn);
         Ok(Session {
             child,
             log,
@@ -198,17 +206,27 @@ impl ScreenOff {
             .arg(format!("--screen-off-timeout={AWAKE_SECONDS}"))
             .arg(format!("--port={SCREEN_PORTS}"))
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         unsafe {
             command.pre_exec(|| {
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
                 Ok(())
             });
         }
-        let child = command
+        let turn = sys::scrcpy_turn();
+        let mut child = command
             .spawn()
             .map_err(|e| format!("No se pudo apagar la pantalla: {e}"))?;
+        let log = Arc::new(Mutex::new(Log::default()));
+        if let Some(stdout) = child.stdout.take() {
+            pump(stdout, log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pump(stderr, log.clone());
+        }
+        wait_for_server(&mut child, &log);
+        drop(turn);
         Ok(ScreenOff { child })
     }
 
@@ -220,6 +238,19 @@ impl ScreenOff {
     /// Lo cierra, y con eso la pantalla se vuelve a prender.
     pub fn stop(mut self) {
         stop_child(&mut self.child);
+    }
+}
+
+/// Espera a que el servidor de scrcpy arranque en el teléfono (o a que scrcpy
+/// termine), como mucho 10 segundos. Mientras tanto ningún otro scrcpy debe
+/// arrancar (ver `sys::scrcpy_turn`).
+fn wait_for_server(child: &mut Child, log: &Mutex<Log>) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if log.lock().unwrap().server_started || !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -250,13 +281,13 @@ fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
     });
 }
 
-/// Traduce los errores más comunes de scrcpy a algo que se pueda resolver.
 /// La cámara del teléfono no aceptó el tamaño o los cuadros pedidos.
 fn camera_rejected(line: &str) -> bool {
     let lower = line.to_lowercase();
     lower.contains("camera device is currently in the error state") || lower.contains("not supported by hal")
 }
 
+/// Traduce los errores más comunes de scrcpy a algo que se pueda resolver.
 fn explain(raw: &str, link: Link, saver: bool) -> String {
     let lower = raw.to_lowercase();
     // La cámara rechazó el tamaño al abrirse. scrcpy también dice «Device

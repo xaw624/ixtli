@@ -183,11 +183,16 @@ ixtli --help
 ## How it works
 
 1. `scrcpy` captures the phone's camera over USB or WiFi (with Android's wireless
-   debugging or `adb tcpip`) and sends it to a virtual camera created with
+   debugging or `adb tcpip`) and sends it to an internal virtual camera created with
    `v4l2loopback`.
-2. The phone's microphone audio goes to an internal audio output that does not play on
+2. Ixtli copies that image to the **Ixtli** camera, always at the same size, and sends
+   black while the camera is off. So you can switch camera, lens, power saving mode or
+   rotation during a call without the call losing the camera. The quality can't be
+   changed while a call is using the camera. Don't pick the **Ixtli-interna** camera:
+   it is internal.
+3. The phone's microphone audio goes to an internal audio output that does not play on
    the speakers.
-3. A virtual microphone takes what arrives at that output, so other programs see it as
+4. A virtual microphone takes what arrives at that output, so other programs see it as
    a regular microphone.
 
 Turning off or closing Ixtli closes `scrcpy` and removes the virtual microphone.
@@ -200,6 +205,9 @@ Turning off or closing Ixtli closes `scrcpy` and removes the virtual microphone.
   Ixtli loads it again when needed. The `.deb` package loads it at boot.
 - In some browsers you have to reload the video call page for the new camera and
   microphone to show up.
+- When upgrading from version 0.2, Ixtli asks you to update the virtual camera once
+  (with your password and calls closed), or it updates itself when the computer
+  restarts.
 
 ## Credits
 

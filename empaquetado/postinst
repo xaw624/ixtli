@@ -1,6 +1,12 @@
 #!/bin/sh
 # Activa la cámara virtual de una vez, sin esperar al siguiente arranque.
 set -e
-if [ "$1" = configure ] && [ ! -d /sys/module/v4l2loopback ]; then
-    modprobe v4l2loopback 2>/dev/null || true
+if [ "$1" = configure ]; then
+    if [ ! -d /sys/module/v4l2loopback ]; then
+        modprobe v4l2loopback 2>/dev/null || true
+    elif ! grep -qx Ixtli-interna /sys/devices/virtual/video4linux/video*/name 2>/dev/null; then
+        # Cargado por una versión anterior, sin la cámara interna. Si alguien
+        # la está usando no se puede recargar: queda para el siguiente arranque.
+        modprobe -r v4l2loopback 2>/dev/null && modprobe v4l2loopback 2>/dev/null || true
+    fi
 fi

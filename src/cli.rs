@@ -177,11 +177,18 @@ fn status() -> ExitCode {
 
     let cam = sys::virtual_cam();
     match &cam {
-        Some(cam) => println!(
+        Some(cam) if sys::internal_cam().is_some() => println!(
             "{} Cámara virtual: «{}» en {}",
             mark(true),
             cam.label,
             cam.path.display()
+        ),
+        Some(cam) => println!(
+            "{} Cámara virtual: «{}» en {}, pero sin la cámara interna: las videollamadas la pierden al cambiar algo.\n     Actualízala (con las videollamadas cerradas): sudo modprobe -r v4l2loopback && {}",
+            mark(false),
+            cam.label,
+            cam.path.display(),
+            sys::module_command()
         ),
         None if deps.module => println!(
             "{} Cámara virtual: apagada. Se activa sola al encender, o con: {}",
