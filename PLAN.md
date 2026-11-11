@@ -10,9 +10,9 @@ Dónde quedó el trabajo:
 - **Fase 2 a medias:** existen `ixtli medir`, el **modo ahorro**, la **batería a la
   vista**, **elegir lente** y la **pantalla apagada**, que ahora es automática.
 - El 10 de noviembre se probó con el moto g34 por cable y por WiFi (ver «Primera
-  prueba con el teléfono» abajo). De ahí salieron tres arreglos, todavía **sin
-  probar en la ventana**: búsqueda propia en la red (mDNS), tamaños del modo ahorro
-  múltiplos de 8 y pantalla apagada siempre.
+  prueba con el teléfono» abajo). De ahí salieron tres arreglos: búsqueda propia en
+  la red (mDNS), tamaños del modo ahorro múltiplos de 8 y pantalla apagada siempre.
+  Los dos últimos ya se probaron en Meet; el de mDNS falta.
 - Todo hasta `b60bc36` está subido a GitHub (10 de noviembre).
   Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
@@ -21,9 +21,8 @@ Dónde quedó el trabajo:
 
 Lo siguiente, en orden:
 
-1. **Probar los arreglos con el teléfono:** «Vincular con QR» en la red local (hay que
-   activar la Depuración inalámbrica: el 10 de noviembre estaba apagada), el modo
-   ahorro desde la ventana y girar el teléfono con la pantalla apagada.
+1. **Probar «Vincular con QR»** en la red local con el teléfono (hay que activar la
+   Depuración inalámbrica: el 10 de noviembre estaba apagada).
 2. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
    usuario; por teléfono son cuatro corridas de `ixtli medir 15 --pantalla-prendida`
    (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS.
@@ -63,8 +62,8 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   el interruptor; la pantalla se apaga al encender la cámara. `--pantalla-prendida`
   la deja prendida solo esa vez (ya no se guarda `pantalla_apagada` en
   `opciones.conf`). Con la pantalla apagada por Ixtli el sensor de giro sigue activo
-  (`mEnabled=true` en el moto), así que se quitó la regla de dejar el giro fijo. Falta
-  girar el teléfono con la pantalla apagada y ver que la imagen lo siga.
+  (`mEnabled=true` en el moto), así que se quitó la regla de dejar el giro fijo. El
+  usuario lo probó en Meet y los giros funcionan con la pantalla apagada.
 - **«Server connection failed» al encender:** los dos scrcpy (cámara y pantalla)
   usaban los mismos puertos de la computadora (desde 27183) y, si arrancaban juntos,
   a veces uno se conectaba con el otro. Ahora el de la pantalla usa 27300 a 27399
@@ -107,7 +106,8 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   lector abierto mientras se corta el video del teléfono (sigue recibiendo negro),
   Firefox con la ventana y la vista previa abiertas, y dos Ixtli a la vez (el segundo
   avisa y no estorba). Después el usuario lo probó en una llamada real de Meet con
-  el moto g34 y dijo que funciona perfecto.
+  el moto g34: funcionan la cámara frontal y la trasera, los giros, los cambios de
+  calidad y el modo ahorro.
 - **Sin explicar:** scrcpy se reinició tres veces con las mismas opciones (19:19:24,
   19:19:45, 19:23:08). Las dos primeras eran con 960x540, así que seguramente eran
   el rechazo de la cámara. La tercera fue por WiFi justo antes de que se cayera la
