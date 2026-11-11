@@ -492,11 +492,89 @@ pub struct MdnsService {
     pub addr: String,
 }
 
-/// Lo que los teléfonos anuncian en la red (mDNS), según adb.
+/// Lo que los teléfonos anuncian en la red (mDNS). Ixtli busca por su cuenta,
+/// porque el adb de Debian viene sin esa búsqueda; también se suma lo que vea
+/// un adb que sí la tenga (el de Google).
 pub fn mdns_services() -> Vec<MdnsService> {
-    run_for("adb", &["mdns", "services"], Duration::from_secs(4))
+    let mut services = Vec::new();
+    if let Some(browser) = browser() {
+        // Recién encendida, la búsqueda tarda un momento en oír las respuestas.
+        if let Some(wait) = FIRST_ANSWERS.checked_sub(browser.started.elapsed()) {
+            thread::sleep(wait);
+        }
+        services = browser.services.lock().map(|list| list.clone()).unwrap_or_default();
+    }
+    let from_adb = run_for("adb", &["mdns", "services"], Duration::from_secs(4))
         .map(|output| parse_mdns(&output))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for service in from_adb {
+        if !services.contains(&service) {
+            services.push(service);
+        }
+    }
+    services
+}
+
+const CONNECT_TYPE: &str = "_adb-tls-connect._tcp.local.";
+const PAIRING_TYPE: &str = "_adb-tls-pairing._tcp.local.";
+/// Cuánto se espera la primera vez a que contesten los teléfonos.
+const FIRST_ANSWERS: Duration = Duration::from_millis(1500);
+
+/// La búsqueda en la red: se enciende la primera vez que hace falta y sigue
+/// escuchando mientras Ixtli esté abierto.
+struct Browser {
+    _daemon: mdns_sd::ServiceDaemon,
+    services: std::sync::Arc<Mutex<Vec<MdnsService>>>,
+    started: Instant,
+}
+
+fn browser() -> Option<&'static Browser> {
+    static BROWSER: std::sync::OnceLock<Option<Browser>> = std::sync::OnceLock::new();
+    BROWSER
+        .get_or_init(|| {
+            let daemon = mdns_sd::ServiceDaemon::new().ok()?;
+            let services = std::sync::Arc::new(Mutex::new(Vec::new()));
+            for (kind_name, kind) in [(CONNECT_TYPE, MdnsKind::Connect), (PAIRING_TYPE, MdnsKind::Pairing)] {
+                let events = daemon.browse(kind_name).ok()?;
+                let services = std::sync::Arc::clone(&services);
+                thread::spawn(move || {
+                    while let Ok(event) = events.recv() {
+                        let Ok(mut list) = services.lock() else { return };
+                        match event {
+                            mdns_sd::ServiceEvent::ServiceResolved(info) => {
+                                let name = instance_name(info.get_fullname(), kind_name);
+                                let ips: Vec<std::net::Ipv4Addr> = info.get_addresses_v4().into_iter().collect();
+                                remember_service(&mut list, kind, &name, &ips, info.get_port());
+                            }
+                            mdns_sd::ServiceEvent::ServiceRemoved(_, fullname) => {
+                                let name = instance_name(&fullname, kind_name);
+                                list.retain(|service| !(service.kind == kind && service.name == name));
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+            Some(Browser { _daemon: daemon, services, started: Instant::now() })
+        })
+        .as_ref()
+}
+
+/// De «adb-ZY32-AbCd._adb-tls-connect._tcp.local.» saca «adb-ZY32-AbCd».
+fn instance_name(fullname: &str, kind_name: &str) -> String {
+    fullname.strip_suffix(kind_name).unwrap_or(fullname).trim_end_matches('.').to_string()
+}
+
+/// Guarda lo que anunció un teléfono, en lugar de lo que había anunciado antes
+/// con ese nombre. Las direcciones de la red de casa van antes que las de una
+/// VPN (100.64.0.0/10, como Tailscale).
+fn remember_service(list: &mut Vec<MdnsService>, kind: MdnsKind, name: &str, ips: &[std::net::Ipv4Addr], port: u16) {
+    list.retain(|service| !(service.kind == kind && service.name == name));
+    let mut ips = ips.to_vec();
+    ips.sort_by_key(|ip| (!ip.is_private(), *ip));
+    for ip in ips {
+        list.push(MdnsService { name: name.to_string(), kind, addr: format!("{ip}:{port}") });
+    }
 }
 
 /// Interpreta `adb mdns services`: «nombre  tipo  IP:puerto» por renglón.
@@ -987,6 +1065,24 @@ mod tests {
         let hotspot = "31: swlan0    inet 10.180.33.1/24 scope global swlan0\n";
         assert_eq!(parse_wifi_ip(hotspot).as_deref(), Some("10.180.33.1"));
         assert_eq!(parse_wifi_ip("1: lo    inet 127.0.0.1/8 scope host lo\n"), None);
+    }
+
+    #[test]
+    fn mdns_own_search() {
+        assert_eq!(instance_name("adb-ZY32-AbCd._adb-tls-connect._tcp.local.", CONNECT_TYPE), "adb-ZY32-AbCd");
+        assert_eq!(instance_name("ixtli-k3m9px._adb-tls-pairing._tcp.local.", PAIRING_TYPE), "ixtli-k3m9px");
+        let mut list = Vec::new();
+        let vpn = std::net::Ipv4Addr::new(100, 91, 2, 3);
+        let home = std::net::Ipv4Addr::new(192, 168, 1, 101);
+        remember_service(&mut list, MdnsKind::Connect, "adb-ZY32-AbCd", &[vpn, home], 37211);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].addr, "192.168.1.101:37211");
+        // Un anuncio nuevo del mismo teléfono reemplaza al anterior.
+        remember_service(&mut list, MdnsKind::Connect, "adb-ZY32-AbCd", &[home], 40001);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].addr, "192.168.1.101:40001");
+        remember_service(&mut list, MdnsKind::Pairing, "ixtli-k3m9px", &[home], 41875);
+        assert_eq!(list.len(), 2);
     }
 
     #[test]
