@@ -12,7 +12,7 @@ Dónde quedó el trabajo:
 - El 10 de noviembre se probó con el moto g34 por cable y por WiFi (ver «Primera
   prueba con el teléfono» abajo). De ahí salieron tres arreglos: búsqueda propia en
   la red (mDNS), tamaños del modo ahorro múltiplos de 8 y pantalla apagada siempre.
-  Los dos últimos ya se probaron en Meet; el de mDNS falta.
+  Los tres ya están probados: el QR el 10 de noviembre por la red de casa.
 - Todo hasta `b60bc36` está subido a GitHub (10 de noviembre).
   Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
@@ -21,17 +21,15 @@ Dónde quedó el trabajo:
 
 Lo siguiente, en orden:
 
-1. **Probar «Vincular con QR»** en la red local con el teléfono (hay que activar la
-   Depuración inalámbrica: el 10 de noviembre estaba apagada).
-2. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
+1. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
    usuario; por teléfono son cuatro corridas de `ixtli medir 15 --pantalla-prendida`
    (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS.
    La batería solo se ve por WiFi, porque por cable el teléfono se carga. Después,
    las filas del modo ahorro y de la pantalla apagada.
-3. **Terminar la fase 2:** ya no queda nada opcional por programar. Los sondeos más
+2. **Terminar la fase 2:** ya no queda nada opcional por programar. Los sondeos más
    lentos y la vista previa ligera sí cambian el gasto normal: van después de llenar
    la tabla base, para ver la diferencia.
-4. Después, la fase 3 (motor de video propio).
+3. Después, la fase 3 (motor de video propio).
 
 Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
 
@@ -56,8 +54,9 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   biblioteca `mdns-sd` 0.21 (compila con Rust 1.85): `sys::browser()` escucha
   `_adb-tls-connect` y `_adb-tls-pairing` desde la primera vez que hace falta, y
   `mdns_services()` suma lo que vea un adb con mDNS. Las direcciones de la red de
-  casa van antes que las de la VPN. Falta probarlo con la Depuración inalámbrica
-  encendida.
+  casa van antes que las de la VPN. Probado el 10 de noviembre en la red de casa: el
+  teléfono anunció el servicio de vínculo, en 2 segundos quedó conectado
+  (`192.168.1.101:41543`) y la cámara encendió por WiFi.
 - **Pantalla apagada siempre:** el usuario no le vio utilidad como opción. Se quitó
   el interruptor; la pantalla se apaga al encender la cámara. `--pantalla-prendida`
   la deja prendida solo esa vez (ya no se guarda `pantalla_apagada` en
@@ -128,9 +127,6 @@ Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inest
 
 - WiFi en vivo: desconectar el cable y apagar el WiFi del teléfono con la cámara
   encendida; cerrar y reabrir Ixtli sin cable.
-- «Vincular con QR» en la red local, ya con la búsqueda propia (mDNS). El 10 de
-  noviembre falló porque el adb de Debian no busca en la red. El código de 6 dígitos
-  sí funcionó, por VPN (Tailscale).
 - Instalar el `.deb` en la computadora del usuario y reiniciar, para ver que la cámara
   «Ixtli» aparece sola. Hoy hay una cámara virtual «Celular» cargada a mano.
 - El botón «Activar» después de reiniciar la computadora.
@@ -166,8 +162,8 @@ moto g34 5G:
   con el moto g34 (`--pantalla-prendida` para dejarla prendida).
 - **WiFi:** «Conectar por WiFi» con el cable una vez
   (`adb tcpip`), probado con el moto g34; y «Vincular con QR» sin cable
-  (`adb pair` + búsqueda mDNS propia, módulos `pairing.rs` y `sys.rs`); el QR falta
-  probarlo en la red local.
+  (`adb pair` + búsqueda mDNS propia, módulos `pairing.rs` y `sys.rs`); los dos
+  probados con el moto g34.
 
 Cómo está hecho:
 
@@ -225,10 +221,10 @@ puede hacer cualquier día, en paralelo con las fases 0 a 3.
 
 Objetivo: dejar el WiFi probado con teléfonos reales y guardado en git.
 
-- Probar «Vincular con QR» en el moto g34 escaneando desde Depuración inalámbrica.
-  El adb de Debian no busca en la red (mDNS), así que Ixtli busca por su cuenta
-  (`mdns-sd`). Si la tarjeta se queda en «Esperando…», puede ser que la red bloquee
-  los anuncios entre equipos.
+- Hecho y probado con el moto g34: «Vincular con QR» escaneando desde Depuración
+  inalámbrica. El adb de Debian no busca en la red (mDNS), así que Ixtli busca por su
+  cuenta (`mdns-sd`). Si la tarjeta se queda en «Esperando…», puede ser que la red
+  bloquee los anuncios entre equipos.
 - Hecho y probado con el moto g34, también por VPN (Tailscale): vinculación con código de 6 dígitos, en la
   tarjeta de la ventana y con `ixtli vincular IP:PUERTO CÓDIGO`. Si el teléfono no se
   anuncia en la red (VPN), Ixtli pide su «Dirección IP y puerto» y la guarda en
