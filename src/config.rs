@@ -105,13 +105,16 @@ pub fn lenses(cameras: &[crate::sys::PhoneCamera], facing: Facing) -> Vec<&crate
 
 /// El tamaño del modo ahorro: el más cercano a 480 de alto, de preferencia
 /// panorámico (16:9, como 720p) y siempre más chico que 720p.
+///
+/// Solo tamaños con ancho y alto múltiplos de 8: el moto g34 anuncia 960x540
+/// y 1600x900, pero su cámara los rechaza al abrirla.
 fn saver_size(sizes: &[(u32, u32)]) -> Option<(u32, u32)> {
     let short = |&(w, h): &(u32, u32)| w.min(h);
     let wide = |&(w, h): &(u32, u32)| {
         let ratio = f64::from(w.max(h)) / f64::from(w.min(h).max(1));
         (ratio - 16.0 / 9.0).abs() <= 16.0 / 9.0 * 0.1
     };
-    let fits = |size: &&(u32, u32)| (360..720).contains(&short(size));
+    let fits = |size: &&(u32, u32)| (360..720).contains(&short(size)) && size.0 % 8 == 0 && size.1 % 8 == 0;
     let closest = |list: Vec<&(u32, u32)>| {
         list.into_iter()
             .min_by_key(|size| (short(size).abs_diff(480), std::cmp::Reverse(size.0 * size.1)))
@@ -477,14 +480,17 @@ mod tests {
         );
         let cameras = [
             camera(Facing::Back, &[15, 24, 30], &[(1920, 1080), (1280, 720), (864, 480), (640, 480), (320, 240)]),
-            camera(Facing::Front, &[24, 30], &[(1920, 1080), (1280, 720), (720, 480), (640, 480), (960, 540)]),
+            camera(Facing::Front, &[24, 30], &[(1920, 1080), (1280, 720), (720, 480), (640, 480), (960, 544)]),
         ];
         let back = Options { facing: Facing::Back, ..saver }.capture(Some(&cameras));
         assert_eq!(back, Capture { camera_id: None, size: "864x480".into(), fps: 15, bit_rate: Some("2M") });
         assert_eq!(back.describe(), "864x480, 15 cuadros/s, 2 Mb/s");
-        // La frontal no tiene 16:9 de 480 de alto: el panorámico más cercano es 960x540.
+        // La frontal no tiene 16:9 de 480 de alto: el panorámico más cercano es 960x544.
         let front = saver.capture(Some(&cameras));
-        assert_eq!((front.size.as_str(), front.fps), ("960x540", 24));
+        assert_eq!((front.size.as_str(), front.fps), ("960x544", 24));
+        // Como el moto g34: 960x540 no es múltiplo de 8 y su cámara no lo acepta.
+        let moto = [(1280, 720), (960, 720), (960, 540), (960, 432), (720, 480), (640, 480)];
+        assert_eq!(saver_size(&moto), Some((720, 480)));
         // Sin panorámicos chicos, cualquier tamaño cercano a 480p.
         assert_eq!(saver_size(&[(1280, 720), (640, 480), (352, 288)]), Some((640, 480)));
         // Nada más chico que 720p: se queda en 720p.

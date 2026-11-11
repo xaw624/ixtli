@@ -148,9 +148,15 @@ impl Session {
                 // Deja que los hilos lectores alcancen las últimas líneas.
                 thread::sleep(Duration::from_millis(150));
                 let log = self.log.lock().unwrap();
+                // El rechazo de la cámara no es el último error que escribe
+                // scrcpy («Video encoding error» llega después).
                 let raw = log
-                    .last_error
-                    .as_deref()
+                    .lines
+                    .iter()
+                    .rev()
+                    .find(|line| camera_rejected(line))
+                    .map(String::as_str)
+                    .or(log.last_error.as_deref())
                     .or(log.last_warning.as_deref())
                     .or(log.lines.back().map(String::as_str))
                     .unwrap_or("scrcpy se cerró sin dar detalles");
@@ -240,10 +246,25 @@ fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
 }
 
 /// Traduce los errores más comunes de scrcpy a algo que se pueda resolver.
+/// La cámara del teléfono no aceptó el tamaño o los cuadros pedidos.
+fn camera_rejected(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.contains("camera device is currently in the error state") || lower.contains("not supported by hal")
+}
+
 fn explain(raw: &str, link: Link, saver: bool) -> String {
     let lower = raw.to_lowercase();
+    // La cámara rechazó el tamaño al abrirse. scrcpy también dice «Device
+    // disconnected», así que esto va antes que la conexión perdida.
+    let rejected = camera_rejected(raw);
     let known = if lower.contains("not supported before android 12") {
         "Tu teléfono necesita Android 12 o más nuevo para compartir la cámara."
+    } else if rejected || (lower.contains("camera") && (lower.contains("size") || lower.contains("no matching") || lower.contains("fps"))) {
+        if saver {
+            "La cámara de tu teléfono no acepta el modo ahorro. Apágalo e intenta otra vez."
+        } else {
+            "La cámara de tu teléfono no acepta esa calidad. Prueba con 720p."
+        }
     } else if lower.contains("device disconnected") || lower.contains("could not find any adb device")
     {
         match link {
@@ -254,12 +275,6 @@ fn explain(raw: &str, link: Link, saver: bool) -> String {
         "Falta aceptar el aviso de depuración USB en el teléfono."
     } else if lower.contains("v4l2") || lower.contains("failed to open output") {
         "No se pudo enviar el video a la cámara virtual. ¿La está usando otro programa?"
-    } else if lower.contains("camera") && (lower.contains("size") || lower.contains("no matching") || lower.contains("fps")) {
-        if saver {
-            "La cámara de tu teléfono no acepta el modo ahorro. Apágalo e intenta otra vez."
-        } else {
-            "La cámara de tu teléfono no acepta esa calidad. Prueba con 720p."
-        }
     } else {
         return format!("scrcpy se cerró con un error: {}", raw.trim());
     };
@@ -301,5 +316,9 @@ mod tests {
         let size = "ERROR: Could not select camera size";
         assert!(explain(size, Link::Usb, false).contains("720p"));
         assert!(explain(size, Link::Usb, true).contains("modo ahorro"));
+        // Lo que dice scrcpy cuando la cámara del moto g34 rechaza 960x540.
+        let rejected = "[server] ERROR: Capture/encoding error: java.io.IOException: android.hardware.camera2.CameraAccessException: The camera device is currently in the error state; no further calls to it will succeed.\nWARN: Device disconnected";
+        assert!(explain(rejected, Link::Usb, true).contains("modo ahorro"));
+        assert!(explain(rejected, Link::Usb, false).contains("720p"));
     }
 }
