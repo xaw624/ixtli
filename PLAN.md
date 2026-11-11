@@ -16,7 +16,8 @@ Dónde quedó el trabajo:
 - Todo hasta `95368a5` está subido a GitHub; los commits de los arreglos son locales.
   Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
-  cámara» abajo. Hay que probarlo en Meet.
+  cámara» abajo. El 10 de noviembre el usuario lo probó en una llamada de Meet y
+  funcionó bien.
 
 Lo siguiente, en orden:
 
@@ -69,8 +70,7 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   a veces uno se conectaba con el otro. Ahora el de la pantalla usa 27300 a 27399
   (`SCREEN_PORTS` en `session.rs`) y arranca hasta que la cámara ya está en vivo. Al
   reabrir la cámara por un giro, la pantalla se queda apagada. Probado por cable desde
-  la terminal; falta ver en Meet que la cámara aparezca (el usuario dijo que Meet no
-  la reconocía; quizá fue esta falla, o Meet se abrió con la cámara apagada).
+  la terminal, y después en Meet (ver la siguiente nota).
 - **Meet perdía la cámara (resuelto el 10 de noviembre).** Tres causas, todas
   comprobadas con el moto g34, un Firefox de prueba (oculto, perfil temporal) y
   lectores de prueba:
@@ -106,8 +106,8 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   Pruebas hechas: 8 encendidos seguidos alternando modo ahorro, 6 sin pausa, un
   lector abierto mientras se corta el video del teléfono (sigue recibiendo negro),
   Firefox con la ventana y la vista previa abiertas, y dos Ixtli a la vez (el segundo
-  avisa y no estorba). Falta probarlo en Meet de verdad: apagar y prender, modo
-  ahorro y giro en plena llamada, y ver el aviso de la calidad bloqueada.
+  avisa y no estorba). Después el usuario lo probó en una llamada real de Meet con
+  el moto g34 y dijo que funciona perfecto.
 - **Sin explicar:** scrcpy se reinició tres veces con las mismas opciones (19:19:24,
   19:19:45, 19:23:08). Las dos primeras eran con 960x540, así que seguramente eran
   el rechazo de la cámara. La tercera fue por WiFi justo antes de que se cayera la
