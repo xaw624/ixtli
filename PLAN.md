@@ -62,6 +62,13 @@ Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
   `opciones.conf`). Con la pantalla apagada por Ixtli el sensor de giro sigue activo
   (`mEnabled=true` en el moto), así que se quitó la regla de dejar el giro fijo. Falta
   girar el teléfono con la pantalla apagada y ver que la imagen lo siga.
+- **«Server connection failed» al encender:** los dos scrcpy (cámara y pantalla)
+  usaban los mismos puertos de la computadora (desde 27183) y, si arrancaban juntos,
+  a veces uno se conectaba con el otro. Ahora el de la pantalla usa 27300 a 27399
+  (`SCREEN_PORTS` en `session.rs`) y arranca hasta que la cámara ya está en vivo. Al
+  reabrir la cámara por un giro, la pantalla se queda apagada. Probado por cable desde
+  la terminal; falta ver en Meet que la cámara aparezca (el usuario dijo que Meet no
+  la reconocía; quizá fue esta falla, o Meet se abrió con la cámara apagada).
 - **Sin explicar:** scrcpy se reinició tres veces con las mismas opciones (19:19:24,
   19:19:45, 19:23:08). Las dos primeras eran con 960x540, así que seguramente eran
   el rechazo de la cámara. La tercera fue por WiFi justo antes de que se cayera la

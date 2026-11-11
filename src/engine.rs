@@ -264,6 +264,12 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     });
                 }
                 None if running.session.is_live() => {
+                    // Se apaga la pantalla hasta ahora: si los dos scrcpy
+                    // arrancan juntos, se pueden estorbar.
+                    if running.options.screen_off && !running.screen_tried {
+                        running.screen_tried = true;
+                        running.screen = ScreenOff::start(&running.serial).ok();
+                    }
                     let capture = running.capture.clone();
                     let screen_off = running.screen.as_mut().is_some_and(ScreenOff::running);
                     update(&shared, |state| {
@@ -276,17 +282,27 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     if running.turned() {
                         let (options, serial, link) =
                             (running.options, running.serial.clone(), running.link);
+                        // La pantalla se queda apagada mientras se reabre.
+                        let screen = running.screen.take();
+                        let screen_tried = running.screen_tried;
                         end(&mut session, true);
                         match open(&options, &serial, link, true) {
-                            Ok(reopened) => {
+                            Ok(mut reopened) => {
+                                reopened.screen = screen;
+                                reopened.screen_tried = screen_tried;
                                 session = Some(reopened);
                                 update(&shared, |state| state.phase = Phase::Starting);
                             }
-                            Err(problem) => update(&shared, |state| {
-                                state.phase = Phase::Off;
-                                state.mic = false;
-                                state.error = Some(problem);
-                            }),
+                            Err(problem) => {
+                                if let Some(screen) = screen {
+                                    screen.stop();
+                                }
+                                update(&shared, |state| {
+                                    state.phase = Phase::Off;
+                                    state.mic = false;
+                                    state.error = Some(problem);
+                                })
+                            }
                         }
                     }
                 }
@@ -562,6 +578,8 @@ struct Running {
     capture: Capture,
     /// El scrcpy que mantiene apagada la pantalla, si se pidió.
     screen: Option<ScreenOff>,
+    /// Ya se intentó apagar la pantalla en esta sesión.
+    screen_tried: bool,
     last_turn_check: Instant,
     last_ping: Instant,
     missed_pings: u8,
@@ -666,9 +684,10 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             serial: serial.to_string(),
             link,
             capture,
-            // Se apaga después de abrir la cámara, cuando ya se leyó el giro.
-            // Si no se puede, la cámara sigue con la pantalla prendida.
-            screen: options.screen_off.then(|| ScreenOff::start(serial).ok()).flatten(),
+            // La pantalla se apaga cuando la cámara ya está en vivo (ver el
+            // motor). Si no se puede, la cámara sigue con la pantalla prendida.
+            screen: None,
+            screen_tried: false,
             last_turn_check: Instant::now(),
             last_ping: Instant::now(),
             missed_pings: 0,

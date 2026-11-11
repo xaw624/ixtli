@@ -175,6 +175,10 @@ impl Session {
 /// Mientras la cámara está encendida, el teléfono no se duerme solo: scrcpy
 /// cambia el tiempo de espera de la pantalla a un día y lo regresa al cerrar.
 const AWAKE_SECONDS: u32 = 24 * 60 * 60;
+/// Puertos de la computadora para el scrcpy de la pantalla. Si usara los de
+/// siempre (desde 27183) y arrancara junto con la cámara, a veces uno de los
+/// dos se conectaba con el otro y fallaba con «Server connection failed».
+const SCREEN_PORTS: &str = "27300:27399";
 
 /// Un segundo scrcpy, sin video ni audio, que solo apaga la pantalla del
 /// teléfono. Hace falta aparte porque con la cámara como fuente scrcpy no
@@ -192,6 +196,7 @@ impl ScreenOff {
             .arg(serial)
             .args(["--no-video", "--no-audio", "--no-window", "--turn-screen-off"])
             .arg(format!("--screen-off-timeout={AWAKE_SECONDS}"))
+            .arg(format!("--port={SCREEN_PORTS}"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
