@@ -13,7 +13,7 @@ Dónde quedó el trabajo:
   prueba con el teléfono» abajo). De ahí salieron tres arreglos, todavía **sin
   probar en la ventana**: búsqueda propia en la red (mDNS), tamaños del modo ahorro
   múltiplos de 8 y pantalla apagada siempre.
-- Todo hasta `95368a5` está subido a GitHub; los commits de los arreglos son locales.
+- Todo hasta `b60bc36` está subido a GitHub (10 de noviembre).
   Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
   cámara» abajo. El 10 de noviembre el usuario lo probó en una llamada de Meet y
