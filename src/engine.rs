@@ -7,7 +7,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::audio;
-use crate::config::{self, Capture, Options, Quality, Remembered, Rotation};
+use crate::config::{self, Capture, Motor, Options, Quality, Remembered, Rotation};
+use crate::direct::{self, Direct};
 use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
 use crate::relay::{self, Relay};
@@ -41,6 +42,13 @@ const PING_EVERY: Duration = Duration::from_secs(3);
 /// videollamadas no pierdan la cámara al apagarla o al cambiar algo.
 static RELAY: Mutex<Option<Relay>> = Mutex::new(None);
 
+/// Giro y espejo con que el puente acomoda los cuadros del motor propio.
+fn relay_turn(degrees: u16, mirror: bool) {
+    if let Some(relay) = RELAY.lock().unwrap().as_ref() {
+        relay.set_turn(degrees, mirror);
+    }
+}
+
 /// Deja el puente escribiendo en «Ixtli» con el tamaño de `quality`.
 fn relay_to(public: &VirtualCam, internal: &VirtualCam, quality: Quality) {
     let mut relay = RELAY.lock().unwrap();
@@ -70,6 +78,8 @@ pub struct Snapshot {
     pub mic: bool,
     /// Lo que se le pidió a la cámara del teléfono en la sesión en vivo.
     pub capture: Option<Capture>,
+    /// En la sesión en vivo, el video lo trae el motor propio (no scrcpy).
+    pub own_motor: bool,
     /// La batería del teléfono conectado, si se pudo leer.
     pub battery: Option<Battery>,
     /// Las cámaras del teléfono conectado, cuando ya se leyeron.
@@ -253,7 +263,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             Some(running) => match running.session.finished() {
                 Some(outcome) => {
                     let (options, link, with_mic) =
-                        (running.options, running.link, running.session.with_mic);
+                        (running.options, running.link, running.session.with_mic());
                     end(&mut session, true);
                     // Si se desconectó el cable pero el teléfono sigue por
                     // WiFi, la cámara continúa sin cable.
@@ -304,10 +314,12 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                 None if running.session.is_live() => {
                     let capture = running.capture.clone();
                     let screen_off = running.screen.as_mut().is_some_and(ScreenOff::running);
+                    let own_motor = running.session.is_own();
                     update(&shared, |state| {
                         state.phase = Phase::Live;
                         state.capture = Some(capture);
                         state.screen_off = screen_off;
+                        state.own_motor = own_motor;
                     });
                     // La pantalla se apaga hasta ahora, con la cámara ya en
                     // vivo: si los dos scrcpy arrancan juntos, se estorban.
@@ -315,10 +327,15 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                         running.screen_tried = true;
                         running.screen = ScreenOff::start(&running.serial).ok();
                     }
-                    // Giro automático: si el teléfono cambió de posición, se
+                    // Giro automático: si el teléfono cambió de posición, el
+                    // motor propio gira la imagen en el puente; con scrcpy se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
                     let watched = !shared.lock().unwrap().cam_users.is_empty() || relay::preview_watched();
-                    if running.turned(watched) {
+                    let turn = running.turned(watched);
+                    if let (Some(degrees), true) = (turn, running.session.is_own()) {
+                        relay_turn(degrees, running.options.mirror);
+                        running.degrees = degrees;
+                    } else if turn.is_some() {
                         let (options, serial, link) =
                             (running.options, running.serial.clone(), running.link);
                         // La pantalla se queda apagada mientras se reabre.
@@ -448,10 +465,27 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             (None, _) => Duration::from_millis(1500),
         };
         match inbox.recv_timeout(pause) {
+            // Con el motor propio, el giro y el espejo cambian en el puente
+            // sin reabrir la cámara. La vista previa no le importa al motor.
+            Ok(Order::Start(options)) if session.as_ref().is_some_and(|running| running.keeps_open(&options)) => {
+                if let Some(running) = &mut session {
+                    let quarters = match options.rotation {
+                        Rotation::Auto => sys::phone_rotation(&running.serial),
+                        Rotation::Fixed(_) => None,
+                    };
+                    running.degrees = options.rotation.degrees(options.facing, quarters);
+                    running.options = options;
+                    running.last_turn_check = Instant::now();
+                    if running.session.is_own() {
+                        relay_turn(running.degrees, options.mirror);
+                    }
+                }
+                update(&shared, |state| state.error = None);
+            }
             Ok(Order::Start(options)) => {
                 // Si el micrófono sigue en uso se conserva, para que la
                 // videollamada no lo pierda al cambiar una opción.
-                let keep_mic = options.mic && session.as_ref().is_some_and(|s| s.session.with_mic);
+                let keep_mic = options.mic && session.as_ref().is_some_and(|s| s.session.with_mic());
                 // La pantalla se queda apagada mientras se reabre con las
                 // opciones nuevas, como con el giro: si no, se prende un
                 // momento en cada cambio de cámara o de lente.
@@ -637,9 +671,51 @@ fn look_for_phone(shared: &Mutex<Snapshot>, has_adb: bool, remembered: Option<&R
     });
 }
 
+/// Quién trae el video en una sesión.
+enum Video {
+    Scrcpy(Session),
+    Own(Direct),
+}
+
+impl Video {
+    fn is_own(&self) -> bool {
+        matches!(self, Video::Own(_))
+    }
+
+    fn is_live(&self) -> bool {
+        match self {
+            Video::Scrcpy(session) => session.is_live(),
+            Video::Own(direct) => direct.is_live(),
+        }
+    }
+
+    fn finished(&mut self) -> Option<Result<(), String>> {
+        match self {
+            Video::Scrcpy(session) => session.finished(),
+            Video::Own(direct) => direct.finished(),
+        }
+    }
+
+    fn with_mic(&self) -> bool {
+        match self {
+            Video::Scrcpy(session) => session.with_mic,
+            Video::Own(direct) => direct.with_mic,
+        }
+    }
+
+    fn stop(self) {
+        match self {
+            Video::Scrcpy(session) => session.stop(),
+            Video::Own(direct) => direct.stop(),
+        }
+    }
+}
+
 /// Una sesión abierta, con lo necesario para reabrirla si hay que girarla.
 struct Running {
-    session: Session,
+    session: Video,
+    /// Giro con el que se está mandando la imagen.
+    degrees: u16,
     options: Options,
     serial: String,
     link: Link,
@@ -658,6 +734,11 @@ struct Running {
 }
 
 impl Running {
+    /// Con las opciones nuevas no hace falta reabrir la cámara.
+    fn keeps_open(&self, new: &Options) -> bool {
+        keeps_open(&self.options, new, self.session.is_own())
+    }
+
     /// Por WiFi: el teléfono dejó de responder. Mientras lleguen cuadros al
     /// puente no se le pregunta nada. Si dejan de llegar (o no hay puente,
     /// con el módulo viejo), pregunta enseguida y luego cada 3 segundos, y lo
@@ -680,28 +761,35 @@ impl Running {
     }
 
     /// Con giro automático: el teléfono ya no está en la posición con la que
-    /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos
+    /// se está mandando la imagen; devuelve el giro nuevo. Pregunta al teléfono como mucho cada 1.5 segundos
     /// si alguien ve la cámara (`watched`), o cada 10 si nadie la ve; cuando
     /// alguien la empieza a ver, pregunta enseguida.
     ///
     /// Con la pantalla apagada por Ixtli el sensor sigue activo (el teléfono
     /// sigue despierto; comprobado en el moto g34).
-    fn turned(&mut self, watched: bool) -> bool {
+    fn turned(&mut self, watched: bool) -> Option<u16> {
         let started_watching = watched && !self.watched;
         self.watched = watched;
         if self.options.rotation != Rotation::Auto {
-            return false;
+            return None;
         }
         if !turn_due(watched, started_watching, self.last_turn_check.elapsed()) {
-            return false;
+            return None;
         }
         self.last_turn_check = Instant::now();
-        match sys::phone_rotation(&self.serial) {
-            // Sin dato del sensor no se toca nada.
-            None => false,
-            quarters => self.options.rotation.degrees(self.options.facing, quarters) != self.session.degrees,
-        }
+        // Sin dato del sensor no se toca nada.
+        let quarters = sys::phone_rotation(&self.serial)?;
+        let degrees = self.options.rotation.degrees(self.options.facing, Some(quarters));
+        (degrees != self.degrees).then_some(degrees)
     }
+}
+
+/// Pasar de `old` a `new` no necesita reabrir la cámara: solo cambia la
+/// vista previa o, con el motor propio (`own`), el giro y el espejo.
+fn keeps_open(old: &Options, new: &Options, own: bool) -> bool {
+    let same = |options: &Options| Options { preview: new.preview, ..*options } == *new;
+    let turn_only = Options { rotation: new.rotation, mirror: new.mirror, ..*old };
+    same(old) || (own && same(&turn_only))
 }
 
 /// Toca preguntar la posición del teléfono: enseguida si alguien acaba de
@@ -778,11 +866,21 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
         // El modo ahorro y el lente necesitan saber qué cámaras hay.
         let cameras = options.needs_cameras().then(|| sys::phone_cameras(serial)).flatten();
         let capture = options.capture(cameras.as_deref());
-        Session::start(serial, link, &sink, options, &capture, degrees).map(|session| (session, capture))
+        // El motor propio necesita el puente (cámara interna) y el servidor de
+        // scrcpy en la computadora. El ángulo libre todavía lo gira scrcpy.
+        let own = options.motor == Motor::Own && internal.is_some() && options.angle == 0 && direct::server().is_some();
+        let video = if own {
+            relay_turn(degrees, options.mirror);
+            Video::Own(Direct::start(serial, link, &cam, options, &capture)?)
+        } else {
+            Video::Scrcpy(Session::start(serial, link, &sink, options, &capture, degrees)?)
+        };
+        Ok((video, capture, degrees))
     })();
     match opened {
-        Ok((session, capture)) => Ok(Running {
+        Ok((session, capture, degrees)) => Ok(Running {
             session,
+            degrees,
             options: *options,
             serial: serial.to_string(),
             link,
@@ -813,7 +911,7 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
 /// siguiente sesión lo vaya a seguir usando.
 fn end(session: &mut Option<Running>, keep_mic: bool) {
     if let Some(running) = session.take() {
-        let with_mic = running.session.with_mic;
+        let with_mic = running.session.with_mic();
         // Primero se prende la pantalla, por si la cámara tarda en cerrar.
         if let Some(screen) = running.screen {
             screen.stop();
@@ -828,6 +926,25 @@ fn end(session: &mut Option<Running>, keep_mic: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_needs_reopening() {
+        let old = Options::default();
+        let preview = Options { preview: false, ..old };
+        let turned = Options { rotation: Rotation::Fixed(90), mirror: true, ..old };
+        let quality = Options { quality: Quality::FullHd, ..old };
+        let angle = Options { angle: 10, ..old };
+        // La vista previa nunca reabre.
+        assert!(keeps_open(&old, &preview, false));
+        assert!(keeps_open(&old, &preview, true));
+        // El giro y el espejo, solo con el motor propio.
+        assert!(!keeps_open(&old, &turned, false));
+        assert!(keeps_open(&old, &turned, true));
+        // Lo demás siempre reabre.
+        assert!(!keeps_open(&old, &quality, true));
+        assert!(!keeps_open(&old, &angle, true));
+        assert!(!keeps_open(&old, &Options { quality: Quality::FullHd, ..turned }, true));
+    }
 
     #[test]
     fn turn_checks_slow_down_without_viewers() {

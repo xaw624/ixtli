@@ -20,17 +20,17 @@ pub const LOST_WIFI: &str =
     "Se perdió la conexión WiFi con el teléfono. Revisa que el teléfono y esta computadora sigan en la misma red.";
 
 #[derive(Default)]
-struct Log {
-    lines: VecDeque<String>,
-    last_error: Option<String>,
-    last_warning: Option<String>,
+pub(crate) struct Log {
+    pub(crate) lines: VecDeque<String>,
+    pub(crate) last_error: Option<String>,
+    pub(crate) last_warning: Option<String>,
     sink_started: bool,
     /// El servidor de scrcpy ya arrancó en el teléfono.
-    server_started: bool,
+    pub(crate) server_started: bool,
 }
 
 impl Log {
-    fn push(&mut self, line: String) {
+    pub(crate) fn push(&mut self, line: String) {
         if line.contains("v4l2 sink started") {
             self.sink_started = true;
         }
@@ -55,9 +55,9 @@ pub struct Session {
     cam: VirtualCam,
     link: Link,
     saver: bool,
+    /// Sin video: solo trae el micrófono (con el motor propio).
+    audio_only: bool,
     pub with_mic: bool,
-    /// Giro con el que se abrió la cámara.
-    pub degrees: u16,
 }
 
 impl Session {
@@ -136,13 +136,59 @@ impl Session {
             cam: cam.clone(),
             link,
             saver: options.saver,
+            audio_only: false,
             with_mic: options.mic,
-            degrees,
+        })
+    }
+
+    /// Un scrcpy sin video que solo trae el micrófono del teléfono, para el
+    /// motor propio (que trae el video por su cuenta).
+    pub fn audio_only(serial: &str, link: Link, cam: &VirtualCam) -> Result<Session, String> {
+        let mut command = Command::new("scrcpy");
+        command
+            .arg("-s")
+            .arg(serial)
+            .args(["--no-video", "--no-control", "--no-window", "--audio-source=mic"])
+            .env("SDL_AUDIODRIVER", "pulseaudio")
+            .env("PULSE_SINK", audio::SINK)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let turn = sys::scrcpy_turn();
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir scrcpy para el micrófono: {e}"))?;
+        let log = Arc::new(Mutex::new(Log::default()));
+        if let Some(stdout) = child.stdout.take() {
+            pump(stdout, log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pump(stderr, log.clone());
+        }
+        wait_for_server(&mut child, &log);
+        drop(turn);
+        Ok(Session {
+            child,
+            log,
+            cam: cam.clone(),
+            link,
+            saver: false,
+            audio_only: true,
+            with_mic: true,
         })
     }
 
     /// El video del teléfono ya está llegando a la cámara virtual.
     pub fn is_live(&self) -> bool {
+        if self.audio_only {
+            return self.log.lock().unwrap().server_started;
+        }
         self.cam.streaming() || self.log.lock().unwrap().sink_started
     }
 
@@ -255,7 +301,7 @@ fn wait_for_server(child: &mut Child, log: &Mutex<Log>) {
 }
 
 /// Cierra un proceso con calma (SIGTERM) y, si no responde, a la fuerza.
-fn stop_child(child: &mut Child) {
+pub(crate) fn stop_child(child: &mut Child) {
     if let Ok(Some(_)) = child.try_wait() {
         return;
     }
@@ -273,7 +319,7 @@ fn stop_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
+pub(crate) fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
     thread::spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
             log.lock().unwrap().push(line);
@@ -282,13 +328,13 @@ fn pump(stream: impl Read + Send + 'static, log: Arc<Mutex<Log>>) {
 }
 
 /// La cámara del teléfono no aceptó el tamaño o los cuadros pedidos.
-fn camera_rejected(line: &str) -> bool {
+pub(crate) fn camera_rejected(line: &str) -> bool {
     let lower = line.to_lowercase();
     lower.contains("camera device is currently in the error state") || lower.contains("not supported by hal")
 }
 
 /// Traduce los errores más comunes de scrcpy a algo que se pueda resolver.
-fn explain(raw: &str, link: Link, saver: bool) -> String {
+pub(crate) fn explain(raw: &str, link: Link, saver: bool) -> String {
     let lower = raw.to_lowercase();
     // La cámara rechazó el tamaño al abrirse. scrcpy también dice «Device
     // disconnected», así que esto va antes que la conexión perdida.

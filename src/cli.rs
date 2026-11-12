@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::audio;
-use crate::config::{self, Facing, Options, Quality, Remembered, Rotation};
+use crate::config::{self, Facing, Motor, Options, Quality, Remembered, Rotation};
 use crate::engine::{Engine, Phase};
 use crate::gui;
 use crate::measure;
@@ -49,8 +49,10 @@ Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
   --pantalla-prendida        No apagar la pantalla del teléfono. Normalmente se apaga
                              mientras la cámara está encendida, para gastar menos
                              batería (desbloquearlo la prende).
+  --motor=propio|scrcpy      Quién trae el video. «propio» (en prueba): Ixtli lo recibe
+                             y lo decodifica él mismo, y girar no corta la imagen.
 
-  -h, --help                 Muestra esta ayuda.
+  -h, --help                Muestra esta ayuda.
   -V, --version              Muestra la versión.";
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -400,6 +402,8 @@ fn read_options(flags: &[String]) -> Result<Options, ExitCode> {
             },
             "--pantalla-apagada" => options.screen_off = true,
             "--pantalla-prendida" => options.screen_off = false,
+            "--motor=propio" => options.motor = Motor::Own,
+            "--motor=scrcpy" => options.motor = Motor::Scrcpy,
             "--micro" => options.mic = true,
             "--sin-micro" => options.mic = false,
             "--giro=auto" => options.rotation = Rotation::Auto,
@@ -494,6 +498,7 @@ fn measure_run(args: &[String]) -> ExitCode {
         if options.mic { " + micro" } else { "" },
     );
     let setup = if options.screen_off { setup } else { format!("{setup} + pantalla prendida") };
+    let setup = if options.motor == Motor::Own { format!("{setup}, motor propio") } else { setup };
     let setup = match capture.as_ref().and_then(|c| c.camera_id.as_ref()) {
         Some(id) => format!("{setup}, lente {id}"),
         None => setup,
@@ -626,6 +631,11 @@ fn start(flags: &[String]) -> ExitCode {
                 println!("En vivo. En tu videollamada elige la cámara «{cam}».");
                 if state.mic {
                     println!("Micrófono: «{}».", audio::MIC_LABEL);
+                }
+                if state.own_motor {
+                    println!("Video: motor propio (en prueba).");
+                } else if options.motor == Motor::Own {
+                    println!("Video: scrcpy (el motor propio necesita la cámara interna, el servidor de scrcpy y ángulo 0).");
                 }
                 println!("Presiona Ctrl+C para apagar.");
             }

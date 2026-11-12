@@ -23,8 +23,10 @@ Dónde quedó el trabajo:
 
 Lo siguiente, en orden:
 
-1. **Fase 3 (motor de video propio).** El 11 de noviembre el usuario decidió seguir
-   programando y dejar para después las mediciones y las pruebas con el teléfono.
+1. **Seguir la fase 3 (motor de video propio).** El 11 de noviembre el usuario
+   decidió seguir programando y dejar para después las mediciones y las pruebas con
+   el teléfono. Ya funciona con simuladores (`--motor=propio`, ver «Avance de la
+   fase 3»); faltan la pausa automática, el ángulo libre y probarlo con el teléfono.
 2. **Más adelante, con el teléfono:** llenar la tabla base de `docs/mediciones.md`.
    Lo hace el usuario; por teléfono son cuatro corridas de `ixtli medir 15
    --pantalla-prendida` (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli»
@@ -406,6 +408,61 @@ nuevo iguale todo.
 Listo cuando: todo lo de la versión 0.3 funciona con el motor nuevo, cambiar el giro
 no corta la imagen, la cámara del teléfono se apaga sola cuando nadie la usa y las
 mediciones son iguales o mejores que las de la fase 2.
+
+### Avance de la fase 3 (11 de noviembre de 2026)
+
+Hechos los pasos 1, 2, 3, 4 (sin el ángulo libre), 6 y 7, probados solo con
+simuladores. **Falta probarlo con un teléfono real.** Por ahora el motor propio
+se pide con `--motor=propio` (o `motor=propio` en `opciones.conf`); el de siempre
+sigue siendo scrcpy hasta probarlo.
+
+- **`direct.rs`**: copia al teléfono el `scrcpy-server` que trae el paquete de
+  scrcpy (`/usr/share/scrcpy/scrcpy-server`, o `SCRCPY_SERVER_PATH`) como
+  `/data/local/tmp/ixtli-server.jar`, con la versión del scrcpy instalado (el
+  servidor exige la versión exacta). Abre el túnel con `adb forward tcp:0
+  localabstract:scrcpy_<scid>` (adb elige el puerto) y arranca el servidor con
+  `raw_stream=true send_dummy_byte=true`: el byte inicial confirma que se conectó
+  al servidor y no solo a adb. **Cambio al plan:** todavía no se empaqueta una
+  versión fija del servidor; se usa la del paquete de scrcpy. Empaquetarla queda
+  para Windows (fase 4), donde no hay paquete.
+- **Decodificador**: `ffmpeg -f h264 -i pipe:0 ... -f yuv4mpegpipe pipe:1`, con un
+  solo hilo (cada hilo de más retrasa un cuadro). yuv4mpeg dice el tamaño en su
+  encabezado. Los cuadros pasan al puente (`relay::deliver`) intercambiando búferes,
+  sin copiarlos.
+- **Giro y espejo en el puente** (`relay::orient`): el servidor manda la imagen como
+  la da el sensor y el puente la gira. El giro automático y los cambios de giro o
+  espejo en la ventana ya no reabren la cámara (`keeps_open` en `engine.rs`).
+  Cambiar la vista previa tampoco reabre, con ningún motor. **Falta:** el ángulo
+  libre; con ángulo distinto de 0 se usa scrcpy.
+- **Micrófono**: un scrcpy sin video (`Session::audio_only`).
+- La red caída se nota porque deja de llegar video: la conexión se cierra y Ixtli
+  avisa enseguida (0.5 a 1.5 s con los simuladores).
+- **Pendiente:** la pausa automática (paso 5), el ángulo libre y empaquetar el
+  servidor.
+
+Cómo se probó: un `adb` simulado que, al arrancar el «servidor», abre el puerto del
+túnel, manda el byte inicial y luego H.264 de prueba (`ffmpeg -f lavfi -i testsrc2
+... -c:v libx264 -tune zerolatency -f h264 -`). Se comprobó la imagen con el
+teléfono vertical y acostado (sacando un cuadro de «Ixtli» con ffmpeg), que el
+servidor se arranca una sola vez al girar, el micrófono, el aviso al cortarse el
+video y que se quita el túnel.
+
+Gasto medido con los simuladores (compilación release, cámara trasera, 30 s): el
+decodificador (ffmpeg) usa 5 % de un núcleo en 720p y 10 a 11 % en 1080p. Ixtli,
+3.5 % en 720p sin giro y unos 7 % con el teléfono vertical (90°); en 1080p, 6.7 %
+sin giro y 13.6 % vertical. Al principio el giro costaba más (8.7 % en 720p y 19 %
+en 1080p): ahora el puente primero achica la imagen y después gira solo la chica
+(`fit_turned`). Con el motor de scrcpy, Ixtli usa 2.7 % en 720p, pero ahí no se
+cuenta lo que gasta scrcpy al decodificar. **Ojo:** en esta computadora las cifras
+cambian hasta 50 % de una corrida a otra (8 GB de memoria con 6 GB en swap): en
+otra corrida el decodificador solo marcó 8 % en 720p. Comparar siempre en la misma
+tanda. El pipe de ffmpeg se agranda a 1 MB (`F_SETPIPE_SZ`) para leer cada cuadro
+en menos pasos; con ese ruido no se pudo medir si ayuda.
+
+Qué hay que ver con el teléfono real: que el servidor acepte los parámetros
+(`raw_stream`, `send_dummy_byte` después, `cleanup=false`), que la imagen sin
+`capture_orientation` salga como la da el sensor (así lo supone el giro), el
+retraso del decodificador y el gasto contra el motor de scrcpy.
 
 Riesgos: el protocolo del servidor cambia entre versiones de scrcpy (por eso se fija
 y se empaqueta una); el retraso del decodificador externo.

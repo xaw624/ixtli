@@ -205,6 +205,12 @@ impl Deps {
     }
 }
 
+/// La versión del programa scrcpy instalado, por ejemplo «3.3.4».
+pub fn scrcpy_version_text() -> Option<String> {
+    let bin = which("scrcpy")?;
+    run(bin, &["--version"]).ok().as_deref().and_then(scrcpy_version).map(|(_, _, text)| text)
+}
+
 /// De "scrcpy 3.3.4 <https://...>" saca (3, 3, "3.3.4").
 fn scrcpy_version(output: &str) -> Option<(u32, u32, String)> {
     let version = output

@@ -13,7 +13,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -40,6 +40,43 @@ static WANTED: AtomicBool = AtomicBool::new(false);
 static LATEST: Mutex<Option<Arc<Frame>>> = Mutex::new(None);
 /// Cuándo llegó el último cuadro del teléfono al puente de este proceso.
 static LAST_REAL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Cuadros que entrega el motor propio (`direct.rs`) sin pasar por la cámara
+/// interna. El búfer se intercambia, no se copia: el decodificador y el
+/// puente se pasan siempre los mismos dos o tres búferes.
+struct Slot {
+    fresh: bool,
+    width: usize,
+    height: usize,
+    data: Vec<u8>,
+}
+
+static DIRECT: Mutex<Slot> = Mutex::new(Slot { fresh: false, width: 0, height: 0, data: Vec::new() });
+static DIRECT_READY: Condvar = Condvar::new();
+
+/// Entrega un cuadro YU12 de `width`x`height` del motor propio. `frame` se
+/// queda con un búfer viejo para el siguiente cuadro.
+pub fn deliver(width: usize, height: usize, frame: &mut Vec<u8>) {
+    let mut slot = DIRECT.lock().unwrap();
+    std::mem::swap(&mut slot.data, frame);
+    slot.width = width;
+    slot.height = height;
+    slot.fresh = true;
+    DIRECT_READY.notify_one();
+}
+
+/// Espera un cuadro del motor propio como mucho `wait`. Si llega, queda en
+/// `into` y devuelve su tamaño.
+fn take_direct(wait: Duration, into: &mut Vec<u8>) -> Option<(usize, usize)> {
+    let slot = DIRECT.lock().unwrap();
+    let (mut slot, _) = DIRECT_READY.wait_timeout_while(slot, wait, |slot| !slot.fresh).unwrap();
+    if !slot.fresh {
+        return None;
+    }
+    slot.fresh = false;
+    std::mem::swap(&mut slot.data, into);
+    Some((slot.width, slot.height))
+}
 
 /// Hay un puente en este proceso: la vista previa sale de aquí.
 pub fn active() -> bool {
@@ -166,6 +203,9 @@ impl PreviewFeed {
 struct Shared {
     /// Tamaño que se quiere en la cámara «Ixtli». `None`: soltarla.
     size: Mutex<Option<(usize, usize)>>,
+    /// Giro (en grados, sentido del reloj) y espejo para los cuadros del
+    /// motor propio. Los de scrcpy ya llegan girados.
+    turn: Mutex<(u16, bool)>,
     closed: AtomicBool,
 }
 
@@ -178,6 +218,7 @@ impl Relay {
     pub fn start(public: VirtualCam, internal: VirtualCam) -> Relay {
         let shared = Arc::new(Shared {
             size: Mutex::new(None),
+            turn: Mutex::new((0, false)),
             closed: AtomicBool::new(false),
         });
         {
@@ -191,6 +232,12 @@ impl Relay {
     /// virtual no deja cambiarlo y se queda el que tenía.
     pub fn set_size(&self, size: Option<(usize, usize)>) {
         *self.shared.size.lock().unwrap() = size;
+    }
+
+    /// Giro y espejo de los cuadros del motor propio. Cambia en el siguiente
+    /// cuadro, sin cortar la imagen.
+    pub fn set_turn(&self, degrees: u16, mirror: bool) {
+        *self.shared.turn.lock().unwrap() = (degrees % 360, mirror);
     }
 }
 
@@ -207,6 +254,9 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
     let mut output: Option<Output> = None;
     let mut input: Option<Input> = None;
     let mut frame = Vec::new();
+    // Para los cuadros del motor propio: el que llega y el ya girado.
+    let mut direct = Vec::new();
+    let mut turned = Vec::new();
     let mut last_real: Option<Instant> = None;
     let mut last_black: Option<Instant> = None;
 
@@ -243,6 +293,23 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
         }
 
         let mut wrote = false;
+        // Del motor propio: se gira aquí y se acomoda igual que lo de scrcpy.
+        let wait = if input.is_none() { Duration::from_millis(20) } else { Duration::ZERO };
+        if let Some((width, height)) = take_direct(wait, &mut direct) {
+            if direct.len() >= width * height * 3 / 2 {
+                let (degrees, mirror) = *shared.turn.lock().unwrap();
+                fit_turned(&direct, width, height, (degrees, mirror), &mut frame, out.width, out.height, &mut turned);
+                if out.write(&frame).is_err() {
+                    output = None;
+                    thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                feed.offer(&frame, out.width, out.height);
+                last_real = Some(Instant::now());
+                *LAST_REAL.lock().unwrap() = last_real;
+                wrote = true;
+            }
+        }
         if let Some(inp) = input.as_mut() {
             match inp.next() {
                 Some(true) => {
@@ -271,9 +338,6 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
                 continue;
             }
             last_black = Some(Instant::now());
-        }
-        if input.is_none() {
-            thread::sleep(Duration::from_millis(20));
         }
     }
     ACTIVE.store(false, Ordering::Relaxed);
@@ -415,6 +479,95 @@ fn black(frame: &mut [u8], width: usize, height: usize) {
     frame[luma..].fill(BLACK_UV);
 }
 
+/// Como `fit`, pero girando la imagen `degrees` (0, 90, 180 o 270, sentido
+/// del reloj) y, con `mirror`, volteándola de izquierda a derecha después de
+/// girarla. Primero la escala al tamaño final sin girar (en `scratch`) y luego
+/// gira solo esa imagen chica: girar el cuadro completo del sensor costaba el
+/// triple.
+#[allow(clippy::too_many_arguments)]
+fn fit_turned(
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    (degrees, mirror): (u16, bool),
+    dst: &mut [u8],
+    dw: usize,
+    dh: usize,
+    scratch: &mut Vec<u8>,
+) {
+    let quarters = (degrees / 90) % 4;
+    if quarters == 0 && !mirror {
+        fit(src, sw, sh, dst, dw, dh);
+        return;
+    }
+    // Tamaño de la imagen ya girada, y el rectángulo que ocupa en el destino.
+    let (tw, th) = if quarters % 2 == 1 { (sh, sw) } else { (sw, sh) };
+    let (rw, rh, x0, y0) = placement(tw, th, dw, dh);
+    // El mismo rectángulo antes de girar.
+    let (uw, uh) = if quarters % 2 == 1 { (rh, rw) } else { (rw, rh) };
+    black(dst, dw, dh);
+    if uw == 0 || uh == 0 {
+        return;
+    }
+    scratch.resize(uw * uh * 3 / 2, 0);
+    let (src_y, src_rest) = src.split_at(sw * sh);
+    let (src_u, src_v) = src_rest.split_at((sw / 2) * (sh / 2));
+    let (small_y, small_rest) = scratch.split_at_mut(uw * uh);
+    let (small_u, small_v) = small_rest.split_at_mut((uw / 2) * (uh / 2));
+    scale_plane(src_y, sw, sh, small_y, uw, (0, 0, uw, uh));
+    let chroma = (sw / 2) * (sh / 2);
+    scale_plane(&src_u[..chroma], sw / 2, sh / 2, small_u, uw / 2, (0, 0, uw / 2, uh / 2));
+    scale_plane(&src_v[..chroma], sw / 2, sh / 2, small_v, uw / 2, (0, 0, uw / 2, uh / 2));
+
+    let (dst_y, dst_rest) = dst.split_at_mut(dw * dh);
+    let (dst_u, dst_v) = dst_rest.split_at_mut((dw / 2) * (dh / 2));
+    orient_plane(small_y, uw, uh, dst_y, dw, (x0, y0), quarters, mirror);
+    let half = (x0 / 2, y0 / 2);
+    orient_plane(small_u, uw / 2, uh / 2, dst_u, dw / 2, half, quarters, mirror);
+    orient_plane(small_v, uw / 2, uh / 2, dst_v, dw / 2, half, quarters, mirror);
+}
+
+/// Gira un plano de `sw`x`sh` y lo escribe en `dst` (de ancho `stride`) a
+/// partir de `(x0, y0)`. Recorre el destino en orden, para escribir seguido.
+#[allow(clippy::too_many_arguments)]
+fn orient_plane(
+    src: &[u8],
+    sw: usize,
+    sh: usize,
+    dst: &mut [u8],
+    stride: usize,
+    (x0, y0): (usize, usize),
+    quarters: u16,
+    mirror: bool,
+) {
+    let (dw, dh) = if quarters % 2 == 1 { (sh, sw) } else { (sw, sh) };
+    if dw == 0 || dh == 0 {
+        return;
+    }
+    let (sw_i, sh_i) = (sw as isize, sh as isize);
+    for y in 0..dh {
+        let yi = y as isize;
+        // Índice en el original del punto (0, y) del girado, y cuánto avanza
+        // con cada punto a la derecha.
+        let (mut start, mut step) = match quarters {
+            1 => ((sh_i - 1) * sw_i + yi, -sw_i),
+            2 => ((sh_i - 1 - yi) * sw_i + sw_i - 1, -1),
+            3 => (sw_i - 1 - yi, sw_i),
+            _ => (yi * sw_i, 1),
+        };
+        if mirror {
+            start += (dw as isize - 1) * step;
+            step = -step;
+        }
+        let row = &mut dst[(y0 + y) * stride + x0..(y0 + y) * stride + x0 + dw];
+        let mut at = start;
+        for pixel in row.iter_mut() {
+            *pixel = src[at as usize];
+            at += step;
+        }
+    }
+}
+
 /// Acomoda un cuadro YU12 de `sw`x`sh` dentro de otro de `dw`x`dh`, sin
 /// deformarlo: lo escala hasta tocar los bordes y rellena con negro lo que
 /// sobra (franjas arriba y abajo, o a los lados).
@@ -423,13 +576,7 @@ fn fit(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], dw: usize, dh: usize) {
         dst.copy_from_slice(&src[..dst.len()]);
         return;
     }
-    // Rectángulo de destino, con medidas pares por el color a la mitad.
-    let (rw, rh) = if sw * dh > dw * sh {
-        (dw, (sh * dw / sw) & !1)
-    } else {
-        ((sw * dh / sh) & !1, dh)
-    };
-    let (x0, y0) = (((dw - rw) / 2) & !1, ((dh - rh) / 2) & !1);
+    let (rw, rh, x0, y0) = placement(sw, sh, dw, dh);
     black(dst, dw, dh);
 
     let (src_y, src_rest) = src.split_at(sw * sh);
@@ -440,6 +587,18 @@ fn fit(src: &[u8], sw: usize, sh: usize, dst: &mut [u8], dw: usize, dh: usize) {
     let half = (x0 / 2, y0 / 2, rw / 2, rh / 2);
     scale_plane(&src_u[..(sw / 2) * (sh / 2)], sw / 2, sh / 2, dst_u, dw / 2, half);
     scale_plane(&src_v[..(sw / 2) * (sh / 2)], sw / 2, sh / 2, dst_v, dw / 2, half);
+}
+
+/// Dónde va una imagen de `sw`x`sh` dentro de una de `dw`x`dh` sin
+/// deformarla: su tamaño y su esquina, con medidas pares por el color a la
+/// mitad.
+fn placement(sw: usize, sh: usize, dw: usize, dh: usize) -> (usize, usize, usize, usize) {
+    let (rw, rh) = if sw * dh > dw * sh {
+        (dw, (sh * dw / sw) & !1)
+    } else {
+        ((sw * dh / sh) & !1, dh)
+    };
+    (rw, rh, ((dw - rw) / 2) & !1, ((dh - rh) / 2) & !1)
 }
 
 /// Escala un plano con interpolación bilineal (en punto fijo) dentro del
@@ -498,6 +657,68 @@ mod tests {
         assert_eq!(back.rgba, frame.rgba);
         assert!(decode_shared(vec![0; 10]).is_none());
         assert!(decode_shared(vec![0; 17]).is_none());
+    }
+
+    #[test]
+    fn orient_turns_and_mirrors() {
+        // Plano de 3x2:  a b c
+        //                d e f
+        let src = [1, 2, 3, 4, 5, 6];
+        let turn = |quarters, mirror| {
+            let (w, h) = if quarters % 2 == 1 { (2, 3) } else { (3, 2) };
+            let mut dst = vec![0; w * h];
+            orient_plane(&src, 3, 2, &mut dst, w, (0, 0), quarters, mirror);
+            dst
+        };
+        // Un cuarto de vuelta a la derecha:  d a / e b / f c
+        assert_eq!(turn(1, false), [4, 1, 5, 2, 6, 3]);
+        assert_eq!(turn(2, false), [6, 5, 4, 3, 2, 1]);
+        assert_eq!(turn(3, false), [3, 6, 2, 5, 1, 4]);
+        // Espejo después de girar.
+        assert_eq!(turn(0, true), [3, 2, 1, 6, 5, 4]);
+        assert_eq!(turn(1, true), [1, 4, 2, 5, 3, 6]);
+        assert_eq!(turn(3, true), [6, 3, 5, 2, 4, 1]);
+        // Dentro de un plano más grande, a partir de (1, 1).
+        let mut big = vec![0; 4 * 4];
+        orient_plane(&src, 3, 2, &mut big, 4, (1, 1), 1, false);
+        assert_eq!(&big[5..7], &[4, 1]);
+        assert_eq!(&big[13..15], &[6, 3]);
+    }
+
+    #[test]
+    fn turned_frame_fits_like_a_turned_image() {
+        // Un cuadro horizontal del sensor (1280x720) girado 90°: queda
+        // vertical dentro de 1280x720, con franjas a los lados.
+        let mut src = solid(1280, 720, 0, 128, 128);
+        // La fila de arriba, clara: al girar a la derecha queda a la derecha.
+        src[..1280].fill(235);
+        let mut dst = vec![0; 1280 * 720 * 3 / 2];
+        let mut scratch = Vec::new();
+        fit_turned(&src, 1280, 720, (90, false), &mut dst, 1280, 720, &mut scratch);
+        let y = |x: usize, row: usize| dst[row * 1280 + x];
+        // 720 de alto → 404 de ancho, desde la columna 438.
+        assert_eq!(y(437, 360), BLACK_Y);
+        assert_eq!(y(440, 360), 0);
+        assert!(y(841, 360) > 100);
+        assert_eq!(y(842, 360), BLACK_Y);
+        // Con espejo, la fila clara queda a la izquierda.
+        fit_turned(&src, 1280, 720, (90, true), &mut dst, 1280, 720, &mut scratch);
+        assert!(dst[360 * 1280 + 438] > 100);
+        assert_eq!(dst[360 * 1280 + 841], 0);
+        // 180°: del mismo tamaño, la fila clara abajo.
+        fit_turned(&src, 1280, 720, (180, false), &mut dst, 1280, 720, &mut scratch);
+        assert!(dst[719 * 1280 + 640] > 100);
+        assert_eq!(dst[640], 0);
+    }
+
+    #[test]
+    fn direct_frames_swap_buffers() {
+        let mut frame = vec![7; 6];
+        deliver(2, 2, &mut frame);
+        let mut into = vec![1; 3];
+        assert_eq!(take_direct(Duration::ZERO, &mut into), Some((2, 2)));
+        assert_eq!(into, vec![7; 6]);
+        assert_eq!(take_direct(Duration::ZERO, &mut into), None);
     }
 
     #[test]

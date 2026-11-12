@@ -557,6 +557,9 @@ impl App {
                 if state.screen_off {
                     detail.push_str(" La pantalla del teléfono se apagó para gastar menos batería.");
                 }
+                if state.own_motor {
+                    detail.push_str(" Motor propio (en prueba).");
+                }
                 (JADE, "En vivo", detail)
             }
             Phase::Starting => (

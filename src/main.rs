@@ -7,6 +7,7 @@
 mod audio;
 mod cli;
 mod config;
+mod direct;
 mod engine;
 mod pairing;
 mod gui;

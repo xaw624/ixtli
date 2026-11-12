@@ -185,6 +185,17 @@ impl Rotation {
     }
 }
 
+/// Quién trae el video del teléfono.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motor {
+    /// El programa scrcpy escribe en la cámara virtual interna.
+    Scrcpy,
+    /// Ixtli habla con el servidor de scrcpy en el teléfono, decodifica el
+    /// video con ffmpeg y lo entrega él mismo (ver `direct.rs`). El giro y el
+    /// espejo ya no reabren la cámara.
+    Own,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     pub facing: Facing,
@@ -208,6 +219,9 @@ pub struct Options {
     /// Siempre se apaga; solo `--pantalla-prendida` la deja prendida, y eso no
     /// se guarda.
     pub screen_off: bool,
+    /// Quién trae el video. Mientras el motor propio no se pruebe con
+    /// teléfonos reales, el de siempre es scrcpy.
+    pub motor: Motor,
 }
 
 impl Default for Options {
@@ -223,6 +237,7 @@ impl Default for Options {
             saver: false,
             lens: None,
             screen_off: true,
+            motor: Motor::Scrcpy,
         }
     }
 }
@@ -341,7 +356,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\nmotor={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -360,6 +375,10 @@ fn serialize(o: &Options) -> String {
         yes_no(o.preview),
         yes_no(o.saver),
         o.lens.map(|id| id.to_string()).unwrap_or_else(|| "principal".into()),
+        match o.motor {
+            Motor::Scrcpy => "scrcpy",
+            Motor::Own => "propio",
+        },
     )
 }
 
@@ -383,6 +402,8 @@ fn parse(text: &str) -> Options {
             ("vista_previa", v) => o.preview = v == "si",
             ("ahorro", v) => o.saver = v == "si",
             ("lente", v) => o.lens = v.parse().ok(),
+            ("motor", "propio") => o.motor = Motor::Own,
+            ("motor", "scrcpy") => o.motor = Motor::Scrcpy,
             _ => {}
         }
     }
@@ -406,6 +427,7 @@ mod tests {
             saver: true,
             lens: Some(2),
             screen_off: true,
+            motor: Motor::Own,
         };
         assert_eq!(parse(&serialize(&o)), o);
         let auto = Options {
