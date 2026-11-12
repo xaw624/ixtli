@@ -1,35 +1,38 @@
 # Plan de Ixtli
 
-Notas para retomar el proyecto en otra sesión. Actualizado el 10 de noviembre de 2026.
+Notas para retomar el proyecto en otra sesión. Actualizado el 11 de noviembre de 2026.
 
-## Para retomar (estado al 10 de noviembre de 2026)
+## Para retomar (estado al 11 de noviembre de 2026)
 
 Dónde quedó el trabajo:
 
 - **Fases 0 y 1 hechas.** Versión 0.2.0 publicada en GitHub Releases, con `.deb`.
-- **Fase 2 a medias:** existen `ixtli medir`, el **modo ahorro**, la **batería a la
-  vista**, **elegir lente** y la **pantalla apagada**, que ahora es automática.
+- **Fase 2 programada:** existen `ixtli medir`, el **modo ahorro**, la **batería a
+  la vista**, **elegir lente**, la **pantalla apagada** (automática), los **sondeos
+  más lentos** y la **vista previa ligera** (los dos últimos del 11 de noviembre,
+  probados solo con simuladores). Solo falta medir con el teléfono real.
 - El 10 de noviembre se probó con el moto g34 por cable y por WiFi (ver «Primera
   prueba con el teléfono» abajo). De ahí salieron tres arreglos: búsqueda propia en
   la red (mDNS), tamaños del modo ahorro múltiplos de 8 y pantalla apagada siempre.
   Los tres ya están probados: el QR el 10 de noviembre por la red de casa.
-- Todo el código está subido a GitHub (10 de noviembre, `93a6c7a`).
-  Todavía no hay versión 0.3 publicada.
+- En GitHub está todo hasta `713041c` (11 de noviembre). Los sondeos y la vista
+  previa ligera van en el commit siguiente. Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
   cámara» abajo. El 10 de noviembre el usuario lo probó en una llamada de Meet y
   funcionó bien.
 
 Lo siguiente, en orden:
 
-1. **Llenar la tabla base** de `docs/mediciones.md` con el teléfono real. Lo hace el
-   usuario; por teléfono son cuatro corridas de `ixtli medir 15 --pantalla-prendida`
-   (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli» abierta en Meet u OBS.
-   La batería solo se ve por WiFi, porque por cable el teléfono se carga. Después,
-   las filas del modo ahorro y de la pantalla apagada.
-2. **Terminar la fase 2:** ya no queda nada opcional por programar. Los sondeos más
-   lentos y la vista previa ligera sí cambian el gasto normal: van después de llenar
-   la tabla base, para ver la diferencia.
-3. Después, la fase 3 (motor de video propio).
+1. **Fase 3 (motor de video propio).** El 11 de noviembre el usuario decidió seguir
+   programando y dejar para después las mediciones y las pruebas con el teléfono.
+2. **Más adelante, con el teléfono:** llenar la tabla base de `docs/mediciones.md`.
+   Lo hace el usuario; por teléfono son cuatro corridas de `ixtli medir 15
+   --pantalla-prendida` (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli»
+   abierta en Meet u OBS. La batería solo se ve por WiFi, porque por cable el
+   teléfono se carga. Después, las filas del modo ahorro y de la pantalla apagada.
+   Como los sondeos y la vista previa ligera ya están hechos, la tabla base ya no
+   muestra el gasto «de antes»: para comparar, medir también con la 0.2.0.
+3. Las pruebas pendientes con el teléfono real (lista abajo), y publicar la 0.3.
 
 Primera prueba con el teléfono (moto g34, 10 de noviembre de 2026):
 
@@ -150,6 +153,9 @@ Pruebas con el teléfono que siguen pendientes (el WiFi del usuario estaba inest
 
 Cómo se probó sin teléfono: con un `adb` y un `scrcpy` simulados (scripts de shell
 puestos antes en el `PATH`, con `XDG_CONFIG_HOME` apuntando a una carpeta temporal).
+Desde el 11 de noviembre el `scrcpy` falso manda video de prueba a `--v4l2-sink`
+(`ffmpeg -re -f lavfi -i testsrc2=size=WxH:rate=30 -pix_fmt yuv420p -f v4l2`), así
+que el puente, la vista previa y la ventana suelta funcionan como con el teléfono.
 No están en el repositorio; hay que volver a escribirlos si hacen falta.
 
 Cosas del entorno:
@@ -314,8 +320,24 @@ motor propio.
   interruptor ni se guarda; `--pantalla-prendida` la deja prendida esa vez. El giro
   automático sigue funcionando (el sensor sigue activo con el panel apagado). Cada
   cambio de opción reabre la cámara, y con eso la pantalla se prende un momento.
-- **Vista previa ligera:** menos cuadros por segundo y se detiene sola cuando la
-  ventana está minimizada o tapada.
+- **Vista previa ligera.** Hecho a medias el 11 de noviembre, probado solo con
+  simuladores:
+  - 10 imágenes por segundo en lugar de 15 (`relay::PREVIEW_EVERY`, la usan el
+    puente, el hilo de la vista previa y la ventana).
+  - Cada imagen se comparte sin copiarla (`Frame::rgba` es `bytes::Bytes`; la ventana
+    suelta usa el mismo búfer que lee de `vista.rgba`).
+  - **No se pudo:** detenerla sola con la ventana minimizada o tapada. En Wayland,
+    winit 0.30 no avisa (`is_minimized` siempre da `None`, no manda `Occluded` y
+    sabe del estado `SUSPENDED` pero no lo pasa), e iced 0.13 dibuja sin esperar al
+    compositor (no llama `pre_present_notify`), así que tampoco sirve ver si se dejó
+    de dibujar. Revisar al cambiar de iced. Mientras, se puede apagar con el
+    interruptor «Vista previa».
+  Medido con simuladores (`scrcpy` falso que manda video de prueba con ffmpeg),
+  compilación release, ventana con vista previa más ventana suelta, 30 a 60 s: la
+  ventana pasó de 6 a 7 % de un núcleo a cerca de 4 %; la ventana suelta, de 0.6 %
+  a 0.7 % (igual) y recibe 8 imágenes/s en lugar de 14. Memoria: 40 a 43 MB la
+  ventana y 34 a 35 MB la suelta, en las dos versiones. No se repitieron los 509 MB
+  que se vieron con el teléfono; hay que ver si vuelven en una sesión larga.
 - **Batería a la vista.** Hecho, probado solo con simuladores. El motor lee
   `dumpsys battery` al aparecer el teléfono y luego cada minuto (`BATTERY_EVERY` en
   `engine.rs`), con la cámara encendida o apagada. La ventana muestra el nivel en el
@@ -333,8 +355,23 @@ motor propio.
   teléfono no tiene ese lente de ese lado, se usa el principal. Al cambiar de
   frontal a trasera se vuelve al principal. En la terminal: `ixtli lentes` y
   `--lente=N` / `--lente=principal`.
-- **Sondeos más lentos:** hoy se pregunta el giro cada 1.5 s y, por WiFi, se hace un
-  «ping» cada 3 s; cada pregunta arranca un proceso en el teléfono. Espaciarlos.
+- **Sondeos más lentos.** Hecho el 11 de noviembre, probado solo con simuladores.
+  Antes se preguntaba el giro cada 1.5 s y, por WiFi, se hacía un «ping» cada 3 s;
+  cada pregunta abre un proceso en el teléfono (el giro, un `dumpsys window`
+  completo). Ahora (`engine.rs`):
+  - **Ping solo si dejan de llegar cuadros.** El puente anota cuándo llegó el último
+    cuadro del teléfono (`relay::receiving`). Mientras lleguen, no se pregunta nada;
+    si pasan 2 s sin cuadros, se pregunta enseguida y luego cada 3 s, y con dos
+    intentos sin respuesta se da por perdida la red. Sin cámara interna (módulo de
+    la 0.2) se pregunta cada 3 s como antes.
+  - **Giro cada 1.5 s solo si alguien ve la cámara:** otro programa tiene abierta
+    «Ixtli» (`cam_users`) o la vista previa está a la vista (`relay::preview_watched`).
+    Si nadie la ve, cada 10 s; cuando alguien la abre, se pregunta enseguida.
+  Con los simuladores, por WiFi, giro automático y 40 s sin nadie viendo: 4
+  preguntas de giro y ningún ping; la 0.2 hacía 20 y 13 (33 procesos en el
+  teléfono). Con un lector abierto, el giro se pregunta cada 2 s como antes.
+  Cortando el video y la red, Ixtli avisa «Se perdió la conexión WiFi» a los 5 s
+  (la 0.2, a los 4 s).
 
 Listo cuando: la tabla de mediciones muestra el antes y el después, y el modo ahorro
 gasta claramente menos batería que 720p normal.

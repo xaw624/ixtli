@@ -19,6 +19,7 @@ use crate::engine::{Engine, Phase, Snapshot};
 use crate::measure::Battery;
 use crate::pairing::{self, Progress};
 use crate::preview::Preview;
+use crate::relay;
 use crate::sys::{self, Link, Phone, Tool};
 
 // Paleta: fondo oscuro con acento verde jade.
@@ -117,9 +118,9 @@ fn theme() -> Theme {
     )
 }
 
-/// Aviso periódico para redibujar la vista previa (unas 15 veces por segundo).
+/// Aviso periódico para redibujar la vista previa (unas 10 veces por segundo).
 fn frames() -> Subscription<Message> {
-    iced::time::every(Duration::from_millis(66)).map(|_| Message::Frame)
+    iced::time::every(relay::PREVIEW_EVERY).map(|_| Message::Frame)
 }
 
 /// La última imagen de la cámara, lista para dibujarse.
@@ -137,6 +138,7 @@ impl Picture {
                 self.handle = Some(image::Handle::from_rgba(
                     frame.width,
                     frame.height,
+                    // `Bytes`: se comparte, no se copia.
                     frame.rgba.clone(),
                 ));
             }

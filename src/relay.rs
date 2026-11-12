@@ -24,8 +24,9 @@ use crate::sys::VirtualCam;
 const BLACK_AFTER: Duration = Duration::from_millis(400);
 /// Cada cuánto se manda el negro (unos 10 cuadros por segundo).
 const BLACK_EVERY: Duration = Duration::from_millis(100);
-/// Unas 15 imágenes por segundo bastan para la vista previa.
-const PREVIEW_EVERY: Duration = Duration::from_millis(66);
+/// Unas 10 imágenes por segundo bastan para la vista previa: es para ver el
+/// encuadre, y cada imagen se convierte a color y se vuelve a dibujar.
+pub const PREVIEW_EVERY: Duration = Duration::from_millis(100);
 
 // La vista previa ya no lee la cámara «Ixtli»: v4l2loopback solo deja leer a
 // un programa a la vez, y si la tomaba Ixtli, la videollamada se quedaba sin
@@ -37,6 +38,8 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// La vista previa de este proceso quiere imágenes.
 static WANTED: AtomicBool = AtomicBool::new(false);
 static LATEST: Mutex<Option<Arc<Frame>>> = Mutex::new(None);
+/// Cuándo llegó el último cuadro del teléfono al puente de este proceso.
+static LAST_REAL: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Hay un puente en este proceso: la vista previa sale de aquí.
 pub fn active() -> bool {
@@ -46,6 +49,18 @@ pub fn active() -> bool {
 /// La vista previa de este proceso quiere (o ya no) imágenes.
 pub fn want_preview(wanted: bool) {
     WANTED.store(wanted, Ordering::Relaxed);
+}
+
+/// El puente de este proceso recibió video del teléfono hace menos de
+/// `within`. Mientras llegan cuadros, la conexión con el teléfono está bien y
+/// no hace falta preguntarle nada.
+pub fn receiving(within: Duration) -> bool {
+    active() && LAST_REAL.lock().unwrap().is_some_and(|at| at.elapsed() < within)
+}
+
+/// Alguien está viendo la vista previa: la de esta ventana o la ventana suelta.
+pub fn preview_watched() -> bool {
+    WANTED.load(Ordering::Relaxed) || shared_wanted()
 }
 
 /// La imagen más reciente para la vista previa de este proceso.
@@ -81,7 +96,7 @@ pub fn shared_frame() -> Option<Frame> {
     if !fresh {
         return None;
     }
-    decode_shared(&std::fs::read(path).ok()?)
+    decode_shared(std::fs::read(path).ok()?)
 }
 
 /// La ventana suelta pidió imágenes hace poco.
@@ -103,13 +118,13 @@ fn encode_shared(frame: &Frame) -> Vec<u8> {
     bytes
 }
 
-fn decode_shared(bytes: &[u8]) -> Option<Frame> {
+fn decode_shared(bytes: Vec<u8>) -> Option<Frame> {
     let width = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
     let height = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?);
     let number = u64::from_le_bytes(bytes.get(8..16)?.try_into().ok()?);
-    let rgba = bytes.get(16..)?;
-    (rgba.len() == width as usize * height as usize * 4)
-        .then(|| Frame { width, height, rgba: rgba.to_vec(), number })
+    // La imagen se queda en el mismo búfer que se leyó, sin copiarla.
+    (bytes.len() == 16 + width as usize * height as usize * 4)
+        .then(|| Frame { width, height, rgba: bytes::Bytes::from(bytes).slice(16..), number })
 }
 
 /// Pasa el cuadro a la vista previa, si alguien la quiere.
@@ -240,6 +255,7 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
                     }
                     feed.offer(&frame, out.width, out.height);
                     last_real = Some(Instant::now());
+                    *LAST_REAL.lock().unwrap() = last_real;
                     wrote = true;
                 }
                 Some(false) => {}
@@ -262,6 +278,7 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
     }
     ACTIVE.store(false, Ordering::Relaxed);
     *LATEST.lock().unwrap() = None;
+    *LAST_REAL.lock().unwrap() = None;
 }
 
 /// La cámara «Ixtli», abierta para escribir.
@@ -475,11 +492,12 @@ mod tests {
 
     #[test]
     fn shared_frame_roundtrip() {
-        let frame = Frame { width: 2, height: 1, rgba: vec![1, 2, 3, 255, 4, 5, 6, 255], number: 7 };
-        let back = decode_shared(&encode_shared(&frame)).unwrap();
+        let frame = Frame { width: 2, height: 1, rgba: vec![1, 2, 3, 255, 4, 5, 6, 255].into(), number: 7 };
+        let back = decode_shared(encode_shared(&frame)).unwrap();
         assert_eq!((back.width, back.height, back.number), (2, 1, 7));
         assert_eq!(back.rgba, frame.rgba);
-        assert!(decode_shared(&[0; 10]).is_none());
+        assert!(decode_shared(vec![0; 10]).is_none());
+        assert!(decode_shared(vec![0; 17]).is_none());
     }
 
     #[test]

@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use bytes::Bytes;
+
 use crate::{relay, sys};
 
 /// Lado más largo de la imagen de la vista previa, en pixeles.
@@ -17,7 +19,8 @@ const MAX_SIDE: usize = 640;
 pub struct Frame {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    /// Se comparte sin copiar con la ventana (`image::Handle::from_rgba`).
+    pub rgba: Bytes,
     /// Cambia con cada imagen nueva.
     pub number: u64,
 }
@@ -73,7 +76,7 @@ fn watch(shared: &Shared) {
         if relay::active() {
             relay::want_preview(wanted);
             *shared.latest.lock().unwrap() = if wanted { relay::latest() } else { None };
-            thread::sleep(Duration::from_millis(60));
+            thread::sleep(relay::PREVIEW_EVERY);
             continue;
         }
         relay::want_preview(false);
@@ -82,7 +85,7 @@ fn watch(shared: &Shared) {
         // (módulo viejo) no hay puente ni vista previa: hay que actualizarla.
         let frame = if wanted && sys::internal_cam().is_some() { relay::shared_frame() } else { None };
         *shared.latest.lock().unwrap() = frame.map(Arc::new);
-        thread::sleep(Duration::from_millis(if wanted { 60 } else { 300 }));
+        thread::sleep(if wanted { relay::PREVIEW_EVERY } else { Duration::from_millis(300) });
     }
 }
 
@@ -115,7 +118,7 @@ pub fn convert(raw: &[u8], width: usize, height: usize, number: u64) -> Frame {
     Frame {
         width: out_width as u32,
         height: out_height as u32,
-        rgba,
+        rgba: rgba.into(),
         number,
     }
 }

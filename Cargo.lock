@@ -1341,6 +1341,7 @@ dependencies = [
 name = "ixtli"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "ctrlc",
  "iced",
  "libc",

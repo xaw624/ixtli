@@ -10,7 +10,7 @@ use crate::audio;
 use crate::config::{self, Capture, Options, Quality, Remembered, Rotation};
 use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
-use crate::relay::Relay;
+use crate::relay::{self, Relay};
 use crate::session::{ScreenOff, Session, LOST_WIFI};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, PhoneCamera, VirtualCam};
 
@@ -22,6 +22,19 @@ const RECONNECT_EVERY: Duration = Duration::from_secs(10);
 const BATTERY_EVERY: Duration = Duration::from_secs(60);
 /// Cada cuánto se revisa qué programas usan la cámara «Ixtli».
 const USERS_EVERY: Duration = Duration::from_secs(2);
+
+/// Cada cuánto se pregunta al teléfono su posición (giro automático) mientras
+/// alguien ve la cámara: una videollamada o la vista previa. Cada pregunta
+/// abre un proceso en el teléfono.
+const TURN_EVERY: Duration = Duration::from_millis(1500);
+/// Lo mismo, cuando nadie la ve. Al abrirla alguien se pregunta enseguida.
+const TURN_EVERY_UNWATCHED: Duration = Duration::from_secs(10);
+/// Por WiFi, mientras lleguen cuadros del teléfono no se le pregunta nada. Si
+/// dejan de llegar durante este tiempo, se le pregunta si sigue ahí (aun en
+/// modo ahorro llega un cuadro cada 66 ms).
+const FRAMES_FRESH: Duration = Duration::from_secs(1);
+/// Cada cuánto se le pregunta, mientras no lleguen cuadros.
+const PING_EVERY: Duration = Duration::from_secs(3);
 
 /// El puente hacia la cámara «Ixtli» (ver `relay.rs`). Se enciende con la
 /// primera sesión y sigue mientras Ixtli esté abierto, para que las
@@ -304,7 +317,8 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     }
                     // Giro automático: si el teléfono cambió de posición, se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
-                    if running.turned() {
+                    let watched = !shared.lock().unwrap().cam_users.is_empty() || relay::preview_watched();
+                    if running.turned(watched) {
                         let (options, serial, link) =
                             (running.options, running.serial.clone(), running.link);
                         // La pantalla se queda apagada mientras se reabre.
@@ -635,31 +649,50 @@ struct Running {
     /// Ya se intentó apagar la pantalla en esta sesión.
     screen_tried: bool,
     last_turn_check: Instant,
-    last_ping: Instant,
+    /// Alguien veía la cámara en la revisión anterior del giro.
+    watched: bool,
+    /// Cuándo se le preguntó al teléfono si sigue ahí. `None` mientras
+    /// llegan cuadros: si dejan de llegar, se le pregunta enseguida.
+    last_ping: Option<Instant>,
     missed_pings: u8,
 }
 
 impl Running {
-    /// Por WiFi: el teléfono dejó de responder. Pregunta cada 3 segundos y
-    /// lo da por perdido después de dos intentos sin respuesta.
+    /// Por WiFi: el teléfono dejó de responder. Mientras lleguen cuadros al
+    /// puente no se le pregunta nada. Si dejan de llegar (o no hay puente,
+    /// con el módulo viejo), pregunta enseguida y luego cada 3 segundos, y lo
+    /// da por perdido después de dos intentos sin respuesta.
     fn lost(&mut self) -> bool {
-        if self.link != Link::Wifi || self.last_ping.elapsed() < Duration::from_secs(3) {
+        if self.link != Link::Wifi {
+            return false;
+        }
+        if relay::receiving(FRAMES_FRESH) {
+            self.missed_pings = 0;
+            self.last_ping = None;
+            return false;
+        }
+        if self.last_ping.is_some_and(|at| at.elapsed() < PING_EVERY) {
             return false;
         }
         self.missed_pings = if sys::reachable(&self.serial) { 0 } else { self.missed_pings + 1 };
-        self.last_ping = Instant::now();
+        self.last_ping = Some(Instant::now());
         self.missed_pings >= 2
     }
 
     /// Con giro automático: el teléfono ya no está en la posición con la que
-    /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos.
+    /// se abrió la cámara. Pregunta al teléfono como mucho cada 1.5 segundos
+    /// si alguien ve la cámara (`watched`), o cada 10 si nadie la ve; cuando
+    /// alguien la empieza a ver, pregunta enseguida.
     ///
     /// Con la pantalla apagada por Ixtli el sensor sigue activo (el teléfono
     /// sigue despierto; comprobado en el moto g34).
-    fn turned(&mut self) -> bool {
-        if self.options.rotation != Rotation::Auto
-            || self.last_turn_check.elapsed() < Duration::from_millis(1500)
-        {
+    fn turned(&mut self, watched: bool) -> bool {
+        let started_watching = watched && !self.watched;
+        self.watched = watched;
+        if self.options.rotation != Rotation::Auto {
+            return false;
+        }
+        if !turn_due(watched, started_watching, self.last_turn_check.elapsed()) {
             return false;
         }
         self.last_turn_check = Instant::now();
@@ -669,6 +702,12 @@ impl Running {
             quarters => self.options.rotation.degrees(self.options.facing, quarters) != self.session.degrees,
         }
     }
+}
+
+/// Toca preguntar la posición del teléfono: enseguida si alguien acaba de
+/// abrir la cámara; si no, cada 1.5 s mientras alguien la ve y cada 10 s si no.
+fn turn_due(watched: bool, started_watching: bool, since_last: Duration) -> bool {
+    started_watching || since_last >= if watched { TURN_EVERY } else { TURN_EVERY_UNWATCHED }
 }
 
 /// Deja todo listo y abre scrcpy. Cada paso que falla explica qué hacer.
@@ -753,7 +792,12 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             screen: None,
             screen_tried: false,
             last_turn_check: Instant::now(),
-            last_ping: Instant::now(),
+            // Recién abierta, el giro está al día: no hace falta preguntar
+            // enseguida aunque alguien la esté viendo.
+            watched: true,
+            // Al abrir todavía no llegan cuadros: se espera un poco antes
+            // de preguntar, como antes.
+            last_ping: Some(Instant::now()),
             missed_pings: 0,
         }),
         Err(problem) => {
@@ -778,5 +822,24 @@ fn end(session: &mut Option<Running>, keep_mic: bool) {
         if with_mic && !keep_mic {
             audio::remove();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turn_checks_slow_down_without_viewers() {
+        let secs = Duration::from_secs;
+        // Alguien ve la cámara: cada 1.5 s.
+        assert!(!turn_due(true, false, Duration::from_millis(1000)));
+        assert!(turn_due(true, false, secs(2)));
+        // Nadie la ve: cada 10 s.
+        assert!(!turn_due(false, false, secs(2)));
+        assert!(!turn_due(false, false, secs(9)));
+        assert!(turn_due(false, false, secs(10)));
+        // La acaban de abrir: enseguida.
+        assert!(turn_due(true, true, Duration::ZERO));
     }
 }
