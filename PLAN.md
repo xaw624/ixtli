@@ -15,8 +15,8 @@ Dónde quedó el trabajo:
   prueba con el teléfono» abajo). De ahí salieron tres arreglos: búsqueda propia en
   la red (mDNS), tamaños del modo ahorro múltiplos de 8 y pantalla apagada siempre.
   Los tres ya están probados: el QR el 10 de noviembre por la red de casa.
-- En GitHub está todo hasta `3c1cb1f` (motor propio). La pausa
-  automática va en el commit siguiente. Todavía no hay versión 0.3 publicada.
+- En GitHub está todo hasta `f8db98a` (pausa automática). El ángulo libre con
+  el motor propio va en el commit siguiente. Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
   cámara» abajo. El 10 de noviembre el usuario lo probó en una llamada de Meet y
   funcionó bien.
@@ -26,8 +26,7 @@ Lo siguiente, en orden:
 1. **Seguir la fase 3 (motor de video propio).** El 11 de noviembre el usuario
    decidió seguir programando y dejar para después las mediciones y las pruebas con
    el teléfono. Ya funciona con simuladores (`--motor=propio`, ver «Avance de la
-   fase 3»), con pausa automática; faltan el ángulo libre y probarlo con el
-   teléfono.
+   fase 3»), con pausa automática y ángulo libre; falta probarlo con el teléfono.
 2. **Más adelante, con el teléfono:** llenar la tabla base de `docs/mediciones.md`.
    Lo hace el usuario; por teléfono son cuatro corridas de `ixtli medir 15
    --pantalla-prendida` (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli»
@@ -395,7 +394,8 @@ Linux no cambia nada a la vista, salvo que el giro deja de cortar la imagen.
    con negro lo que sobre. **Hecho antes** con el puente (`relay.rs`), leyendo de la
    cámara interna donde escribe scrcpy; el motor propio solo cambia de dónde salen
    los cuadros.
-4. **Giro, espejo y ángulo dentro de Ixtli,** sin reabrir la cámara.
+4. **Giro, espejo y ángulo dentro de Ixtli,** sin reabrir la cámara (el ángulo libre
+   terminó girándolo el teléfono; ver «Avance de la fase 3»).
 5. **Pausa automática:** v4l2loopback avisa cuántos programas están usando la cámara.
    Sin ninguno durante unos segundos, Ixtli apaga la cámara del teléfono y manda una
    imagen fija de «en pausa»; al abrirla alguien, la reanuda (tarda unos 2 segundos).
@@ -412,8 +412,8 @@ mediciones son iguales o mejores que las de la fase 2.
 
 ### Avance de la fase 3 (11 de noviembre de 2026)
 
-Hechos los pasos 1 a 7 (el 4 sin el ángulo libre), probados solo con
-simuladores. La pausa automática (paso 5) es del 12 de noviembre. **Falta probarlo con un teléfono real.** Por ahora el motor propio
+Hechos los pasos 1 a 7, probados solo con simuladores. La pausa automática (paso
+5) y el ángulo libre (lo que faltaba del 4) son del 12 de noviembre. **Falta probarlo con un teléfono real.** Por ahora el motor propio
 se pide con `--motor=propio` (o `motor=propio` en `opciones.conf`); el de siempre
 sigue siendo scrcpy hasta probarlo.
 
@@ -433,8 +433,7 @@ sigue siendo scrcpy hasta probarlo.
 - **Giro y espejo en el puente** (`relay::orient`): el servidor manda la imagen como
   la da el sensor y el puente la gira. El giro automático y los cambios de giro o
   espejo en la ventana ya no reabren la cámara (`keeps_open` en `engine.rs`).
-  Cambiar la vista previa tampoco reabre, con ningún motor. **Falta:** el ángulo
-  libre; con ángulo distinto de 0 se usa scrcpy.
+  Cambiar la vista previa tampoco reabre, con ningún motor. Ver abajo el ángulo libre.
 - **Micrófono**: un scrcpy sin video (`Session::audio_only`).
 - La red caída se nota porque deja de llegar video: la conexión se cierra y Ixtli
   avisa enseguida (0.5 a 1.5 s con los simuladores).
@@ -453,7 +452,19 @@ sigue siendo scrcpy hasta probarlo.
   «Ixtli» y solo entonces se revisa, más una revisión de respaldo cada 10 s (antes,
   cada 2 s). De paso, un navegador que solo abre y cierra la cámara para listarla no
   despierta al teléfono.
-- **Pendiente:** el ángulo libre y empaquetar el servidor.
+- **Ángulo libre** (12 de noviembre). **Cambio al plan:** no lo gira Ixtli sino el
+  teléfono, con el parámetro `angle=` del servidor (el mismo que usa `scrcpy
+  --angle`, en la GPU del teléfono). Girar a cualquier ángulo cada cuadro en la
+  computadora costaría de 8 a 20 % de un núcleo en 720p, más que todo lo demás
+  junto, y el ángulo se ajusta una vez y casi no se cambia. El servidor lo aplica
+  antes que el giro y el espejo del puente; los giros se pueden hacer en cualquier
+  orden, pero el espejo no, así que con espejo se le pide al revés
+  (`direct::server_angle`) y la imagen queda igual que con scrcpy, que lo aplica al
+  final. Cambiar el ángulo (o el espejo con ángulo) **reinicia solo el video**
+  (`Change::Restream` en `engine.rs`): el micrófono sigue y «Ixtli» repite el
+  último cuadro mientras vuelve (`Filler::Hold` en el puente), en lugar de negro.
+  El giro y el espejo sin ángulo siguen sin cortar nada.
+- **Pendiente:** empaquetar el servidor (en la fase 4).
 
 Cómo se probó: un `adb` simulado que, al arrancar el «servidor», abre el puerto del
 túnel, manda el byte inicial y luego H.264 de prueba (`ffmpeg -f lavfi -i testsrc2
@@ -483,11 +494,19 @@ gastaba 4.8 %, y por eso se cambió a inotify. Con micrófono, este sigue durant
 pausa y al apagar no quedan módulos de audio. Con `--sin-pausa` y con el motor
 scrcpy no se pausa. La pantalla «En pausa» de la ventana no se ha visto todavía.
 
+Ángulo libre con los simuladores (12 de noviembre; el servidor simulado gira su
+imagen con el filtro `rotate` de ffmpeg cuando recibe `angle=`): con 15° se
+reinició solo el video (`angle=15`), con espejo otra vez (`angle=345`) y con giro
+de 180° no se reinició nada. En los tres casos la imagen final quedó girada en el
+sentido del reloj, como con scrcpy. El micrófono arrancó una sola vez y el
+servidor se copió una sola vez. Mientras el video volvía (unos 2.5 s, casi todo el
+arranque del simulador), «Ixtli» mostró el último cuadro.
+
 Qué hay que ver con el teléfono real: que el servidor acepte los parámetros
 (`raw_stream`, `send_dummy_byte` después, `cleanup=false`), que la imagen sin
 `capture_orientation` salga como la da el sensor (así lo supone el giro), el
-retraso del decodificador y el gasto contra el motor de scrcpy. De la pausa: cuánto
-tarda en volver la imagen, que el teléfono de verdad apague la cámara (se apaga el
+retraso del decodificador y el gasto contra el motor de scrcpy. Que el servidor acepte
+`angle=` con la cámara. De la pausa: cuánto tarda en volver la imagen, que el teléfono de verdad apague la cámara (se apaga el
 indicador verde de Android) y que Meet u OBS no pierdan la cámara durante la pausa.
 
 Riesgos: el protocolo del servidor cambia entre versiones de scrcpy (por eso se fija

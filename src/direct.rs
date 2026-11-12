@@ -80,7 +80,23 @@ fn server_args(version: &str, scid: u32, options: &Options, capture: &Capture) -
     if let Some(rate) = capture.bit_rate.and_then(bit_rate) {
         args.push(format!("video_bit_rate={rate}"));
     }
+    let angle = server_angle(options);
+    if angle != 0 {
+        args.push(format!("angle={angle}"));
+    }
     args
+}
+
+/// El ángulo libre lo gira el teléfono (con su GPU, como con scrcpy), y no
+/// Ixtli: girar a cualquier ángulo cada cuadro en la computadora costaría
+/// más que todo lo demás junto. El servidor lo aplica antes que el giro y el
+/// espejo del puente; como los giros se pueden hacer en cualquier orden, solo
+/// el espejo cambia el resultado: con espejo se pide al revés, para que la
+/// imagen quede igual que con scrcpy (que gira al final). En grados, de 0 a
+/// 359, sentido del reloj.
+pub fn server_angle(options: &Options) -> u16 {
+    let angle = if options.mirror { -options.angle } else { options.angle };
+    angle.rem_euclid(360) as u16
 }
 
 /// «2M» → 2000000, como lo entiende scrcpy.
@@ -290,6 +306,13 @@ impl Direct {
         }
     }
 
+    /// Vuelve a arrancar el video con otras opciones (otro ángulo), sin tocar
+    /// el micrófono.
+    pub fn restart(&mut self, options: &Options, capture: &Capture) -> Result<(), String> {
+        self.pause();
+        self.resume(options, capture)
+    }
+
     /// Vuelve a prender la cámara del teléfono después de una pausa.
     pub fn resume(&mut self, options: &Options, capture: &Capture) -> Result<(), String> {
         if self.stream.is_none() {
@@ -486,6 +509,18 @@ mod tests {
         let args = server_args("3.3.4", 1, &options, &lens);
         assert!(args.contains(&"camera_id=2".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("camera_facing")));
+    }
+
+    #[test]
+    fn mirror_reverses_the_angle() {
+        let tilted = Options { angle: 15, ..Options::default() };
+        assert_eq!(server_angle(&tilted), 15);
+        assert_eq!(server_angle(&Options { mirror: true, ..tilted }), 345);
+        assert_eq!(server_angle(&Options { angle: -180, ..tilted }), 180);
+        assert_eq!(server_angle(&Options::default()), 0);
+        let capture = Capture { camera_id: None, size: "1280x720".into(), fps: 30, bit_rate: None };
+        assert!(server_args("3.3.4", 1, &tilted, &capture).contains(&"angle=15".to_string()));
+        assert!(!server_args("3.3.4", 1, &Options::default(), &capture).iter().any(|a| a.starts_with("angle")));
     }
 
     #[test]

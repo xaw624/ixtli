@@ -11,7 +11,7 @@ use crate::config::{self, Capture, Motor, Options, Quality, Remembered, Rotation
 use crate::direct::{self, Direct};
 use crate::measure::{self, Battery};
 use crate::pairing::{self, Pairing, Progress};
-use crate::relay::{self, Relay};
+use crate::relay::{self, Filler, Relay};
 use crate::session::{ScreenOff, Session, LOST_WIFI};
 use crate::sys::{self, DeviceState, Deps, Link, Phone, PhoneCamera, VirtualCam};
 
@@ -63,10 +63,11 @@ fn relay_turn(degrees: u16, mirror: bool) {
     }
 }
 
-/// Con la cámara del teléfono en pausa, el puente manda la imagen de pausa.
-fn relay_paused(paused: bool) {
+/// Qué manda el puente mientras no llega video: negro, la imagen de pausa o
+/// el último cuadro.
+fn relay_filler(filler: Filler) {
     if let Some(relay) = RELAY.lock().unwrap().as_ref() {
-        relay.set_paused(paused);
+        relay.set_filler(filler);
     }
 }
 
@@ -360,7 +361,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     let screen_off = running.screen.as_mut().is_some_and(ScreenOff::running);
                     let own_motor = running.session.is_own();
                     if own_motor {
-                        relay_paused(false);
+                        relay_filler(Filler::Black);
                     }
                     update(&shared, |state| {
                         state.phase = Phase::Live;
@@ -530,9 +531,14 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
         };
         match inbox.recv_timeout(pause) {
             // Con el motor propio, el giro y el espejo cambian en el puente
-            // sin reabrir la cámara. La vista previa no le importa al motor.
-            Ok(Order::Start(options)) if session.as_ref().is_some_and(|running| running.keeps_open(&options)) => {
+            // sin reabrir la cámara, y el ángulo solo reinicia el video. La
+            // vista previa no le importa al motor.
+            Ok(Order::Start(options))
+                if session.as_ref().is_some_and(|running| running.change(&options) != Change::Reopen) =>
+            {
+                let mut problem = None;
                 if let Some(running) = &mut session {
+                    let restream = running.change(&options) == Change::Restream;
                     let quarters = match options.rotation {
                         Rotation::Auto => sys::phone_rotation(&running.serial),
                         Rotation::Fixed(_) => None,
@@ -543,8 +549,21 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     if running.session.is_own() {
                         relay_turn(running.degrees, options.mirror);
                     }
+                    // En pausa, el ángulo nuevo se usa al reanudar.
+                    if restream && !running.session.is_paused() {
+                        problem = running.restream().err();
+                    }
                 }
-                update(&shared, |state| state.error = None);
+                if problem.is_some() {
+                    end(&mut session, false);
+                }
+                update(&shared, |state| {
+                    if problem.is_some() {
+                        state.phase = Phase::Off;
+                        state.mic = false;
+                    }
+                    state.error = problem;
+                });
             }
             Ok(Order::Start(options)) => {
                 // Si el micrófono sigue en uso se conserva, para que la
@@ -804,9 +823,9 @@ struct Running {
 }
 
 impl Running {
-    /// Con las opciones nuevas no hace falta reabrir la cámara.
-    fn keeps_open(&self, new: &Options) -> bool {
-        keeps_open(&self.options, new, self.session.is_own())
+    /// Qué hay que hacer para pasar a las opciones nuevas.
+    fn change(&self, new: &Options) -> Change {
+        change(&self.options, new, self.session.is_own())
     }
 
     /// Por WiFi: el teléfono dejó de responder. Mientras lleguen cuadros al
@@ -844,7 +863,7 @@ impl Running {
 
     /// Apaga la cámara del teléfono; «Ixtli» muestra la imagen de pausa.
     fn pause(&mut self) {
-        relay_paused(true);
+        relay_filler(Filler::Pause);
         if let Video::Own(direct) = &mut self.session {
             direct.pause();
         }
@@ -867,6 +886,18 @@ impl Running {
         self.last_turn_check = Instant::now();
         self.watched = true;
         // Hasta que vuelvan los cuadros, se espera como al abrir.
+        self.last_ping = Some(Instant::now());
+        self.missed_pings = 0;
+        Ok(())
+    }
+
+    /// Vuelve a arrancar el video del motor propio con las opciones actuales
+    /// (otro ángulo). Mientras tanto, «Ixtli» repite el último cuadro.
+    fn restream(&mut self) -> Result<(), String> {
+        relay_filler(Filler::Hold);
+        if let Video::Own(direct) = &mut self.session {
+            direct.restart(&self.options, &self.capture)?;
+        }
         self.last_ping = Some(Instant::now());
         self.missed_pings = 0;
         Ok(())
@@ -896,12 +927,35 @@ impl Running {
     }
 }
 
-/// Pasar de `old` a `new` no necesita reabrir la cámara: solo cambia la
-/// vista previa o, con el motor propio (`own`), el giro y el espejo.
-fn keeps_open(old: &Options, new: &Options, own: bool) -> bool {
+/// Qué hace falta para cambiar de opciones con la cámara encendida.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    /// Nada, o solo el giro y el espejo del puente.
+    Keep,
+    /// Volver a arrancar el video del motor propio (el ángulo lo gira el
+    /// teléfono). El micrófono sigue.
+    Restream,
+    /// Cerrar y volver a abrir la cámara.
+    Reopen,
+}
+
+/// Pasar de `old` a `new`: la vista previa y la pausa automática nunca
+/// reabren. Con el motor propio (`own`), el giro y el espejo cambian en el
+/// puente y el ángulo reinicia solo el video; lo demás reabre.
+fn change(old: &Options, new: &Options, own: bool) -> Change {
     let same = |options: &Options| Options { preview: new.preview, auto_pause: new.auto_pause, ..*options } == *new;
-    let turn_only = Options { rotation: new.rotation, mirror: new.mirror, ..*old };
-    same(old) || (own && same(&turn_only))
+    if same(old) {
+        return Change::Keep;
+    }
+    let turn_only = Options { rotation: new.rotation, mirror: new.mirror, angle: new.angle, ..*old };
+    if !own || !same(&turn_only) {
+        return Change::Reopen;
+    }
+    if direct::server_angle(old) == direct::server_angle(new) {
+        Change::Keep
+    } else {
+        Change::Restream
+    }
 }
 
 /// Ya pasó suficiente tiempo sin nadie viendo la cámara para pausarla.
@@ -984,8 +1038,8 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
         let cameras = options.needs_cameras().then(|| sys::phone_cameras(serial)).flatten();
         let capture = options.capture(cameras.as_deref());
         // El motor propio necesita el puente (cámara interna) y el servidor de
-        // scrcpy en la computadora. El ángulo libre todavía lo gira scrcpy.
-        let own = options.motor == Motor::Own && internal.is_some() && options.angle == 0 && direct::server().is_some();
+        // scrcpy en la computadora.
+        let own = options.motor == Motor::Own && internal.is_some() && direct::server().is_some();
         let video = if own {
             relay_turn(degrees, options.mirror);
             Video::Own(Direct::start(serial, link, &cam, options, &capture)?)
@@ -1028,7 +1082,7 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
 /// Cierra la sesión (si hay). El micrófono virtual se quita salvo que la
 /// siguiente sesión lo vaya a seguir usando.
 fn end(session: &mut Option<Running>, keep_mic: bool) {
-    relay_paused(false);
+    relay_filler(Filler::Black);
     if let Some(running) = session.take() {
         let with_mic = running.session.with_mic();
         // Primero se prende la pantalla, por si la cámara tarda en cerrar.
@@ -1048,23 +1102,27 @@ mod tests {
 
     #[test]
     fn what_needs_reopening() {
+        use Change::*;
         let old = Options::default();
-        let preview = Options { preview: false, ..old };
+        let preview = Options { preview: false, auto_pause: false, ..old };
         let turned = Options { rotation: Rotation::Fixed(90), mirror: true, ..old };
         let quality = Options { quality: Quality::FullHd, ..old };
         let angle = Options { angle: 10, ..old };
-        // La vista previa nunca reabre.
-        assert!(keeps_open(&old, &preview, false));
-        assert!(keeps_open(&old, &preview, true));
+        // La vista previa y la pausa automática nunca reabren.
+        assert_eq!(change(&old, &preview, false), Keep);
+        assert_eq!(change(&old, &preview, true), Keep);
         // El giro y el espejo, solo con el motor propio.
-        assert!(!keeps_open(&old, &turned, false));
-        assert!(keeps_open(&old, &turned, true));
-        // La pausa automática tampoco.
-        assert!(keeps_open(&old, &Options { auto_pause: false, ..old }, false));
+        assert_eq!(change(&old, &turned, false), Reopen);
+        assert_eq!(change(&old, &turned, true), Keep);
+        // El ángulo reinicia solo el video del motor propio.
+        assert_eq!(change(&old, &angle, false), Reopen);
+        assert_eq!(change(&old, &angle, true), Restream);
+        // Con ángulo, el espejo también: el teléfono lo gira al revés.
+        assert_eq!(change(&angle, &Options { mirror: true, ..angle }, true), Restream);
+        assert_eq!(change(&angle, &Options { rotation: Rotation::Fixed(180), ..angle }, true), Keep);
         // Lo demás siempre reabre.
-        assert!(!keeps_open(&old, &quality, true));
-        assert!(!keeps_open(&old, &angle, true));
-        assert!(!keeps_open(&old, &Options { quality: Quality::FullHd, ..turned }, true));
+        assert_eq!(change(&old, &quality, true), Reopen);
+        assert_eq!(change(&old, &Options { quality: Quality::FullHd, ..angle }, true), Reopen);
     }
 
     #[test]

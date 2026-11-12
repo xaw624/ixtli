@@ -12,7 +12,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -206,10 +206,20 @@ struct Shared {
     /// Giro (en grados, sentido del reloj) y espejo para los cuadros del
     /// motor propio. Los de scrcpy ya llegan girados.
     turn: Mutex<(u16, bool)>,
-    /// La cámara del teléfono está en pausa: sin video se manda la imagen de
-    /// pausa en lugar de negro.
-    paused: AtomicBool,
+    /// Qué mandar mientras no llega video (`Filler` como número).
+    filler: AtomicU8,
     closed: AtomicBool,
+}
+
+/// Qué manda el puente a «Ixtli» mientras no llega video del teléfono.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filler {
+    /// Negro (al arrancar, o si el video se cortó).
+    Black = 0,
+    /// La imagen de pausa: la cámara del teléfono está apagada a propósito.
+    Pause = 1,
+    /// El último cuadro, mientras el video vuelve a arrancar con otro ángulo.
+    Hold = 2,
 }
 
 /// El hilo del puente. Al soltarlo, deja de escribir y cierra la cámara.
@@ -222,7 +232,7 @@ impl Relay {
         let shared = Arc::new(Shared {
             size: Mutex::new(None),
             turn: Mutex::new((0, false)),
-            paused: AtomicBool::new(false),
+            filler: AtomicU8::new(Filler::Black as u8),
             closed: AtomicBool::new(false),
         });
         {
@@ -244,10 +254,9 @@ impl Relay {
         *self.shared.turn.lock().unwrap() = (degrees % 360, mirror);
     }
 
-    /// Mientras la cámara del teléfono está en pausa, «Ixtli» muestra la
-    /// imagen de pausa.
-    pub fn set_paused(&self, paused: bool) {
-        self.shared.paused.store(paused, Ordering::Relaxed);
+    /// Qué muestra «Ixtli» mientras no llega video del teléfono.
+    pub fn set_filler(&self, filler: Filler) {
+        self.shared.filler.store(filler as u8, Ordering::Relaxed);
     }
 }
 
@@ -270,7 +279,8 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
     let mut last_real: Option<Instant> = None;
     let mut last_black: Option<Instant> = None;
     // Qué tiene ya dibujado `frame` sin video: negro (false) o la imagen de
-    // pausa (true). Así no se vuelve a dibujar 10 veces por segundo.
+    // pausa (true); `None`, el último cuadro. Así no se vuelve a dibujar 10
+    // veces por segundo.
     let mut filler: Option<bool> = None;
 
     while !shared.closed.load(Ordering::Relaxed) {
@@ -347,8 +357,13 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
         }
         let quiet = last_real.is_none_or(|at| at.elapsed() > BLACK_AFTER);
         if !wrote && quiet && last_black.is_none_or(|at| at.elapsed() >= BLACK_EVERY) {
-            let paused = shared.paused.load(Ordering::Relaxed);
-            if filler != Some(paused) {
+            // Con `Hold`, `frame` ya tiene el último cuadro: se vuelve a mandar.
+            let paused = match shared.filler.load(Ordering::Relaxed) {
+                1 => Some(true),
+                2 => None,
+                _ => Some(false),
+            };
+            if let Some(paused) = paused.filter(|&paused| filler != Some(paused)) {
                 if paused {
                     pause_image(&mut frame, out.width, out.height);
                 } else {

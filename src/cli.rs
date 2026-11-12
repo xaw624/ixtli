@@ -657,7 +657,7 @@ fn start(flags: &[String]) -> ExitCode {
                 if state.own_motor {
                     println!("Video: motor propio (en prueba).");
                 } else if options.motor == Motor::Own {
-                    println!("Video: scrcpy (el motor propio necesita la cámara interna, el servidor de scrcpy y ángulo 0).");
+                    println!("Video: scrcpy (el motor propio necesita la cámara interna y el servidor de scrcpy).");
                 }
                 println!("Presiona Ctrl+C para apagar.");
             }
