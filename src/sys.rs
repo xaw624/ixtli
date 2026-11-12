@@ -918,6 +918,47 @@ impl VirtualCam {
     }
 }
 
+/// Avisa cuando algún programa abre o cierra un archivo (con inotify), para no
+/// revisar todos los procesos a cada rato: revisarlos cuesta decenas de
+/// milisegundos.
+pub struct OpenWatch {
+    fd: std::os::fd::OwnedFd,
+    pub path: PathBuf,
+}
+
+impl OpenWatch {
+    pub fn new(path: &Path) -> Option<OpenWatch> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+        // SAFETY: llamadas sin punteros, salvo `name`, válido durante la llamada.
+        unsafe {
+            let raw = libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC);
+            if raw < 0 {
+                return None;
+            }
+            let fd = OwnedFd::from_raw_fd(raw);
+            (libc::inotify_add_watch(fd.as_raw_fd(), name.as_ptr(), libc::IN_OPEN | libc::IN_CLOSE) >= 0)
+                .then(|| OpenWatch { fd, path: path.to_path_buf() })
+        }
+    }
+
+    /// Alguien abrió o cerró el archivo desde la última llamada.
+    pub fn changed(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut events = [0u8; 1024];
+        let mut any = false;
+        loop {
+            // SAFETY: `events` es válido y mide lo que se dice.
+            let read = unsafe { libc::read(self.fd.as_raw_fd(), events.as_mut_ptr().cast(), events.len()) };
+            if read <= 0 {
+                return any;
+            }
+            any = true;
+        }
+    }
+}
+
 /// De "YU12:1280x720@30" saca (1280, 720).
 fn parse_format(format: &str) -> Option<(usize, usize)> {
     let size = format.trim().strip_prefix("YU12:")?;
@@ -1046,6 +1087,18 @@ pub fn cam_users(cam: &VirtualCam) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notices_when_a_file_is_opened() {
+        let path = std::env::temp_dir().join(format!("ixtli-abrir-{}", std::process::id()));
+        fs::write(&path, b"x").unwrap();
+        let watch = OpenWatch::new(&path).unwrap();
+        assert!(!watch.changed());
+        drop(fs::File::open(&path).unwrap());
+        assert!(watch.changed());
+        assert!(!watch.changed());
+        let _ = fs::remove_file(&path);
+    }
 
     #[test]
     fn version() {

@@ -560,7 +560,19 @@ impl App {
                 if state.own_motor {
                     detail.push_str(" Motor propio (en prueba).");
                 }
-                (JADE, "En vivo", detail)
+                // Pausa automática: la cámara sigue encendida para Ixtli, pero
+                // la del teléfono descansa hasta que alguien abra «Ixtli».
+                if state.paused {
+                    let mut paused = format!(
+                        "Ningún programa está usando la cámara «{cam}», así que la del teléfono se apagó para ahorrar batería. Se prende sola cuando la abras en tu videollamada (tarda unos segundos)."
+                    );
+                    if state.mic {
+                        paused.push_str(&format!(" El micrófono «{}» sigue funcionando.", audio::MIC_LABEL));
+                    }
+                    (JADE, "En pausa", paused)
+                } else {
+                    (JADE, "En vivo", detail)
+                }
             }
             Phase::Starting => (
                 AMBER,

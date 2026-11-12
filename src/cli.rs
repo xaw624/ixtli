@@ -51,6 +51,9 @@ Opciones de «encender» (si no pones ninguna, se usan las de la ventana):
                              batería (desbloquearlo la prende).
   --motor=propio|scrcpy      Quién trae el video. «propio» (en prueba): Ixtli lo recibe
                              y lo decodifica él mismo, y girar no corta la imagen.
+  --pausa | --sin-pausa      Con el motor propio: apagar la cámara del teléfono cuando
+                             ningún programa usa la cámara «Ixtli» (se prende sola al
+                             abrirla). Normalmente sí.
 
   -h, --help                Muestra esta ayuda.
   -V, --version              Muestra la versión.";
@@ -404,6 +407,8 @@ fn read_options(flags: &[String]) -> Result<Options, ExitCode> {
             "--pantalla-prendida" => options.screen_off = false,
             "--motor=propio" => options.motor = Motor::Own,
             "--motor=scrcpy" => options.motor = Motor::Scrcpy,
+            "--pausa" => options.auto_pause = true,
+            "--sin-pausa" => options.auto_pause = false,
             "--micro" => options.mic = true,
             "--sin-micro" => options.mic = false,
             "--giro=auto" => options.rotation = Rotation::Auto,
@@ -498,7 +503,11 @@ fn measure_run(args: &[String]) -> ExitCode {
         if options.mic { " + micro" } else { "" },
     );
     let setup = if options.screen_off { setup } else { format!("{setup} + pantalla prendida") };
-    let setup = if options.motor == Motor::Own { format!("{setup}, motor propio") } else { setup };
+    let setup = match (options.motor, options.auto_pause) {
+        (Motor::Own, true) => format!("{setup}, motor propio con pausa automática"),
+        (Motor::Own, false) => format!("{setup}, motor propio"),
+        (Motor::Scrcpy, _) => setup,
+    };
     let setup = match capture.as_ref().and_then(|c| c.camera_id.as_ref()) {
         Some(id) => format!("{setup}, lente {id}"),
         None => setup,
@@ -617,6 +626,7 @@ fn start(flags: &[String]) -> ExitCode {
 
     let mut announced = false;
     let mut warned = false;
+    let mut paused = false;
     let code = loop {
         thread::sleep(Duration::from_millis(150));
         if interrupted.load(Ordering::SeqCst) {
@@ -624,6 +634,18 @@ fn start(flags: &[String]) -> ExitCode {
             break ExitCode::SUCCESS;
         }
         let state = engine.snapshot();
+        // La pausa automática se anuncia al entrar y al salir.
+        if announced && state.paused != paused {
+            paused = state.paused;
+            if paused {
+                println!("En pausa: ningún programa usa la cámara. La del teléfono se apagó; se prende sola al abrir «Ixtli».");
+            } else {
+                match state.cam_users.first() {
+                    Some(user) => println!("Reanudando: {user} abrió la cámara."),
+                    None => println!("Reanudando."),
+                }
+            }
+        }
         match state.phase {
             Phase::Live if !announced => {
                 announced = true;

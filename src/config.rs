@@ -222,6 +222,9 @@ pub struct Options {
     /// Quién trae el video. Mientras el motor propio no se pruebe con
     /// teléfonos reales, el de siempre es scrcpy.
     pub motor: Motor,
+    /// Con el motor propio: apagar la cámara del teléfono cuando ningún
+    /// programa usa la cámara «Ixtli» (pausa automática).
+    pub auto_pause: bool,
 }
 
 impl Default for Options {
@@ -238,6 +241,7 @@ impl Default for Options {
             lens: None,
             screen_off: true,
             motor: Motor::Scrcpy,
+            auto_pause: true,
         }
     }
 }
@@ -356,7 +360,7 @@ fn yes_no(value: bool) -> &'static str {
 
 fn serialize(o: &Options) -> String {
     format!(
-        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\nmotor={}\n",
+        "camara={}\ncalidad={}\ngiro={}\nespejo={}\nangulo={}\nmicrofono={}\nvista_previa={}\nahorro={}\nlente={}\nmotor={}\npausa={}\n",
         match o.facing {
             Facing::Front => "frontal",
             Facing::Back => "trasera",
@@ -379,6 +383,7 @@ fn serialize(o: &Options) -> String {
             Motor::Scrcpy => "scrcpy",
             Motor::Own => "propio",
         },
+        if o.auto_pause { "auto" } else { "no" },
     )
 }
 
@@ -404,6 +409,7 @@ fn parse(text: &str) -> Options {
             ("lente", v) => o.lens = v.parse().ok(),
             ("motor", "propio") => o.motor = Motor::Own,
             ("motor", "scrcpy") => o.motor = Motor::Scrcpy,
+            ("pausa", v) => o.auto_pause = v != "no",
             _ => {}
         }
     }
@@ -428,6 +434,7 @@ mod tests {
             lens: Some(2),
             screen_off: true,
             motor: Motor::Own,
+            auto_pause: false,
         };
         assert_eq!(parse(&serialize(&o)), o);
         let auto = Options {

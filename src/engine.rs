@@ -21,8 +21,20 @@ const RECONNECT_EVERY: Duration = Duration::from_secs(10);
 /// Cada cuánto se lee la batería del teléfono. Cada lectura abre un proceso
 /// en el teléfono, y la batería cambia despacio.
 const BATTERY_EVERY: Duration = Duration::from_secs(60);
-/// Cada cuánto se revisa qué programas usan la cámara «Ixtli».
-const USERS_EVERY: Duration = Duration::from_secs(2);
+/// Cada cuánto se revisa qué programas usan la cámara «Ixtli». Revisar los
+/// procesos cuesta decenas de milisegundos, así que normalmente se revisa
+/// cuando el sistema avisa (inotify) que alguien abrió o cerró «Ixtli», y por
+/// si acaso cada 10 segundos.
+const USERS_EVERY: Duration = Duration::from_secs(10);
+/// Sin el aviso del sistema, cada 2 segundos, y en pausa cada 700 ms para
+/// reanudarla pronto.
+const USERS_EVERY_UNWATCHED: Duration = Duration::from_secs(2);
+const USERS_EVERY_PAUSED: Duration = Duration::from_millis(700);
+
+/// Pausa automática (motor propio): sin nadie que vea la cámara durante este
+/// tiempo, se apaga la cámara del teléfono. Con margen para que la
+/// videollamada que cierra y abre la cámara al cambiar algo no la pause.
+const PAUSE_AFTER: Duration = Duration::from_secs(10);
 
 /// Cada cuánto se pregunta al teléfono su posición (giro automático) mientras
 /// alguien ve la cámara: una videollamada o la vista previa. Cada pregunta
@@ -36,6 +48,8 @@ const TURN_EVERY_UNWATCHED: Duration = Duration::from_secs(10);
 const FRAMES_FRESH: Duration = Duration::from_secs(1);
 /// Cada cuánto se le pregunta, mientras no lleguen cuadros.
 const PING_EVERY: Duration = Duration::from_secs(3);
+/// Lo mismo con la cámara en pausa: no llegan cuadros, pero no hay prisa.
+const PING_EVERY_PAUSED: Duration = Duration::from_secs(10);
 
 /// El puente hacia la cámara «Ixtli» (ver `relay.rs`). Se enciende con la
 /// primera sesión y sigue mientras Ixtli esté abierto, para que las
@@ -46,6 +60,13 @@ static RELAY: Mutex<Option<Relay>> = Mutex::new(None);
 fn relay_turn(degrees: u16, mirror: bool) {
     if let Some(relay) = RELAY.lock().unwrap().as_ref() {
         relay.set_turn(degrees, mirror);
+    }
+}
+
+/// Con la cámara del teléfono en pausa, el puente manda la imagen de pausa.
+fn relay_paused(paused: bool) {
+    if let Some(relay) = RELAY.lock().unwrap().as_ref() {
+        relay.set_paused(paused);
     }
 }
 
@@ -80,6 +101,9 @@ pub struct Snapshot {
     pub capture: Option<Capture>,
     /// En la sesión en vivo, el video lo trae el motor propio (no scrcpy).
     pub own_motor: bool,
+    /// La cámara del teléfono está apagada porque nadie usa «Ixtli» (pausa
+    /// automática). Sigue «en vivo»: se prende sola al abrirla alguien.
+    pub paused: bool,
     /// La batería del teléfono conectado, si se pudo leer.
     pub battery: Option<Battery>,
     /// Las cámaras del teléfono conectado, cuando ya se leyeron.
@@ -235,6 +259,11 @@ fn update(shared: &Mutex<Snapshot>, change: impl FnOnce(&mut Snapshot)) {
     change(&mut shared.lock().unwrap());
 }
 
+/// Alguien ve la cámara: un programa la tiene abierta o se ve la vista previa.
+fn watched(shared: &Mutex<Snapshot>) -> bool {
+    !shared.lock().unwrap().cam_users.is_empty() || relay::preview_watched()
+}
+
 fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     let mut session: Option<Running> = None;
     let mut deps_checked: Option<Instant> = None;
@@ -247,6 +276,8 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
     let mut cameras_asked: Option<String> = None;
     // Cuándo se revisó por última vez quién usa la cámara «Ixtli».
     let mut users_checked: Option<Instant> = None;
+    // Aviso de que alguien abrió o cerró la cámara «Ixtli».
+    let mut opens: Option<sys::OpenWatch> = None;
 
     loop {
         // --- Revisar el sistema -------------------------------------------
@@ -311,10 +342,26 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                         state.error = Some(LOST_WIFI.to_string());
                     });
                 }
+                // En pausa: se reanuda en cuanto alguien abre la cámara.
+                None if running.session.is_paused() => {
+                    if watched(&shared) || !running.options.auto_pause {
+                        if let Err(problem) = running.resume() {
+                            end(&mut session, false);
+                            update(&shared, |state| {
+                                state.phase = Phase::Off;
+                                state.mic = false;
+                                state.error = Some(problem);
+                            });
+                        }
+                    }
+                }
                 None if running.session.is_live() => {
                     let capture = running.capture.clone();
                     let screen_off = running.screen.as_mut().is_some_and(ScreenOff::running);
                     let own_motor = running.session.is_own();
+                    if own_motor {
+                        relay_paused(false);
+                    }
                     update(&shared, |state| {
                         state.phase = Phase::Live;
                         state.capture = Some(capture);
@@ -330,7 +377,11 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
                     // Giro automático: si el teléfono cambió de posición, el
                     // motor propio gira la imagen en el puente; con scrcpy se
                     // reabre la cámara con el giro nuevo (tarda un par de segundos).
-                    let watched = !shared.lock().unwrap().cam_users.is_empty() || relay::preview_watched();
+                    let watched = watched(&shared);
+                    if running.idle(watched) {
+                        running.pause();
+                        continue;
+                    }
                     let turn = running.turned(watched);
                     if let (Some(degrees), true) = (turn, running.session.is_own()) {
                         relay_turn(degrees, running.options.mirror);
@@ -448,9 +499,21 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
             }
         }
 
+        let paused = session.as_ref().is_some_and(|running| running.session.is_paused());
+        update(&shared, |state| state.paused = paused);
+
         // --- Quién usa la cámara «Ixtli» -----------------------------------
-        if users_checked.is_none_or(|at| at.elapsed() >= USERS_EVERY) {
-            let cam = shared.lock().unwrap().cam.clone();
+        let cam = shared.lock().unwrap().cam.clone();
+        if opens.as_ref().map(|watch| &watch.path) != cam.as_ref().map(|cam| &cam.path) {
+            opens = cam.as_ref().and_then(|cam| sys::OpenWatch::new(&cam.path));
+        }
+        let changed = opens.as_ref().is_some_and(sys::OpenWatch::changed);
+        let users_every = match (&opens, paused) {
+            (Some(_), _) => USERS_EVERY,
+            (None, false) => USERS_EVERY_UNWATCHED,
+            (None, true) => USERS_EVERY_PAUSED,
+        };
+        if changed || users_checked.is_none_or(|at| at.elapsed() >= users_every) {
             let users = cam.as_ref().map(sys::cam_users).unwrap_or_default();
             update(&shared, |state| state.cam_users = users);
             users_checked = Some(Instant::now());
@@ -460,6 +523,7 @@ fn work(inbox: Receiver<Order>, shared: Arc<Mutex<Snapshot>>) {
         let phase = shared.lock().unwrap().phase;
         let pause = match (&session, phase) {
             (None, _) if pairing.is_some() => Duration::from_millis(800),
+            (Some(_), _) if paused => Duration::from_millis(350),
             (Some(_), Phase::Live) => Duration::from_millis(1000),
             (Some(_), _) => Duration::from_millis(200),
             (None, _) => Duration::from_millis(1500),
@@ -682,6 +746,10 @@ impl Video {
         matches!(self, Video::Own(_))
     }
 
+    fn is_paused(&self) -> bool {
+        matches!(self, Video::Own(direct) if direct.is_paused())
+    }
+
     fn is_live(&self) -> bool {
         match self {
             Video::Scrcpy(session) => session.is_live(),
@@ -731,6 +799,8 @@ struct Running {
     /// llegan cuadros: si dejan de llegar, se le pregunta enseguida.
     last_ping: Option<Instant>,
     missed_pings: u8,
+    /// Desde cuándo nadie ve la cámara (para la pausa automática).
+    unwatched_since: Option<Instant>,
 }
 
 impl Running {
@@ -752,12 +822,54 @@ impl Running {
             self.last_ping = None;
             return false;
         }
-        if self.last_ping.is_some_and(|at| at.elapsed() < PING_EVERY) {
+        let every = if self.session.is_paused() { PING_EVERY_PAUSED } else { PING_EVERY };
+        if self.last_ping.is_some_and(|at| at.elapsed() < every) {
             return false;
         }
         self.missed_pings = if sys::reachable(&self.serial) { 0 } else { self.missed_pings + 1 };
         self.last_ping = Some(Instant::now());
         self.missed_pings >= 2
+    }
+
+    /// Pausa automática: con el motor propio, nadie ve la cámara desde hace
+    /// `PAUSE_AFTER`.
+    fn idle(&mut self, watched: bool) -> bool {
+        if watched || !self.options.auto_pause || !self.session.is_own() {
+            self.unwatched_since = None;
+            return false;
+        }
+        let since = *self.unwatched_since.get_or_insert_with(Instant::now);
+        pause_due(since.elapsed())
+    }
+
+    /// Apaga la cámara del teléfono; «Ixtli» muestra la imagen de pausa.
+    fn pause(&mut self) {
+        relay_paused(true);
+        if let Video::Own(direct) = &mut self.session {
+            direct.pause();
+        }
+        self.unwatched_since = None;
+    }
+
+    /// Vuelve a prender la cámara del teléfono. El giro se lee antes de que
+    /// lleguen los cuadros, por si el teléfono se movió durante la pausa.
+    /// La imagen de pausa sigue hasta que llega el primer cuadro.
+    fn resume(&mut self) -> Result<(), String> {
+        if let Rotation::Auto = self.options.rotation {
+            if let Some(quarters) = sys::phone_rotation(&self.serial) {
+                self.degrees = self.options.rotation.degrees(self.options.facing, Some(quarters));
+            }
+        }
+        relay_turn(self.degrees, self.options.mirror);
+        if let Video::Own(direct) = &mut self.session {
+            direct.resume(&self.options, &self.capture)?;
+        }
+        self.last_turn_check = Instant::now();
+        self.watched = true;
+        // Hasta que vuelvan los cuadros, se espera como al abrir.
+        self.last_ping = Some(Instant::now());
+        self.missed_pings = 0;
+        Ok(())
     }
 
     /// Con giro automático: el teléfono ya no está en la posición con la que
@@ -787,9 +899,14 @@ impl Running {
 /// Pasar de `old` a `new` no necesita reabrir la cámara: solo cambia la
 /// vista previa o, con el motor propio (`own`), el giro y el espejo.
 fn keeps_open(old: &Options, new: &Options, own: bool) -> bool {
-    let same = |options: &Options| Options { preview: new.preview, ..*options } == *new;
+    let same = |options: &Options| Options { preview: new.preview, auto_pause: new.auto_pause, ..*options } == *new;
     let turn_only = Options { rotation: new.rotation, mirror: new.mirror, ..*old };
     same(old) || (own && same(&turn_only))
+}
+
+/// Ya pasó suficiente tiempo sin nadie viendo la cámara para pausarla.
+fn pause_due(unwatched_for: Duration) -> bool {
+    unwatched_for >= PAUSE_AFTER
 }
 
 /// Toca preguntar la posición del teléfono: enseguida si alguien acaba de
@@ -897,6 +1014,7 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
             // de preguntar, como antes.
             last_ping: Some(Instant::now()),
             missed_pings: 0,
+            unwatched_since: None,
         }),
         Err(problem) => {
             if options.mic {
@@ -910,6 +1028,7 @@ fn open(options: &Options, serial: &str, link: Link, mic_ready: bool) -> Result<
 /// Cierra la sesión (si hay). El micrófono virtual se quita salvo que la
 /// siguiente sesión lo vaya a seguir usando.
 fn end(session: &mut Option<Running>, keep_mic: bool) {
+    relay_paused(false);
     if let Some(running) = session.take() {
         let with_mic = running.session.with_mic();
         // Primero se prende la pantalla, por si la cámara tarda en cerrar.
@@ -940,10 +1059,18 @@ mod tests {
         // El giro y el espejo, solo con el motor propio.
         assert!(!keeps_open(&old, &turned, false));
         assert!(keeps_open(&old, &turned, true));
+        // La pausa automática tampoco.
+        assert!(keeps_open(&old, &Options { auto_pause: false, ..old }, false));
         // Lo demás siempre reabre.
         assert!(!keeps_open(&old, &quality, true));
         assert!(!keeps_open(&old, &angle, true));
         assert!(!keeps_open(&old, &Options { quality: Quality::FullHd, ..turned }, true));
+    }
+
+    #[test]
+    fn pauses_after_ten_quiet_seconds() {
+        assert!(!pause_due(Duration::from_secs(9)));
+        assert!(pause_due(Duration::from_secs(10)));
     }
 
     #[test]

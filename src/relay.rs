@@ -206,6 +206,9 @@ struct Shared {
     /// Giro (en grados, sentido del reloj) y espejo para los cuadros del
     /// motor propio. Los de scrcpy ya llegan girados.
     turn: Mutex<(u16, bool)>,
+    /// La cámara del teléfono está en pausa: sin video se manda la imagen de
+    /// pausa en lugar de negro.
+    paused: AtomicBool,
     closed: AtomicBool,
 }
 
@@ -219,6 +222,7 @@ impl Relay {
         let shared = Arc::new(Shared {
             size: Mutex::new(None),
             turn: Mutex::new((0, false)),
+            paused: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         });
         {
@@ -238,6 +242,12 @@ impl Relay {
     /// cuadro, sin cortar la imagen.
     pub fn set_turn(&self, degrees: u16, mirror: bool) {
         *self.shared.turn.lock().unwrap() = (degrees % 360, mirror);
+    }
+
+    /// Mientras la cámara del teléfono está en pausa, «Ixtli» muestra la
+    /// imagen de pausa.
+    pub fn set_paused(&self, paused: bool) {
+        self.shared.paused.store(paused, Ordering::Relaxed);
     }
 }
 
@@ -259,6 +269,9 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
     let mut turned = Vec::new();
     let mut last_real: Option<Instant> = None;
     let mut last_black: Option<Instant> = None;
+    // Qué tiene ya dibujado `frame` sin video: negro (false) o la imagen de
+    // pausa (true). Así no se vuelve a dibujar 10 veces por segundo.
+    let mut filler: Option<bool> = None;
 
     while !shared.closed.load(Ordering::Relaxed) {
         let wanted = *shared.size.lock().unwrap();
@@ -273,6 +286,7 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
             match Output::open(public, wanted) {
                 Ok(opened) => {
                     frame = vec![0; opened.width * opened.height * 3 / 2];
+                    filler = None;
                     output = Some(opened);
                 }
                 Err(_) => {
@@ -308,6 +322,7 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
                 last_real = Some(Instant::now());
                 *LAST_REAL.lock().unwrap() = last_real;
                 wrote = true;
+                filler = None;
             }
         }
         if let Some(inp) = input.as_mut() {
@@ -324,6 +339,7 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
                     last_real = Some(Instant::now());
                     *LAST_REAL.lock().unwrap() = last_real;
                     wrote = true;
+                    filler = None;
                 }
                 Some(false) => {}
                 None => input = None,
@@ -331,7 +347,15 @@ fn run(shared: &Shared, public: &VirtualCam, internal: &VirtualCam) {
         }
         let quiet = last_real.is_none_or(|at| at.elapsed() > BLACK_AFTER);
         if !wrote && quiet && last_black.is_none_or(|at| at.elapsed() >= BLACK_EVERY) {
-            black(&mut frame, out.width, out.height);
+            let paused = shared.paused.load(Ordering::Relaxed);
+            if filler != Some(paused) {
+                if paused {
+                    pause_image(&mut frame, out.width, out.height);
+                } else {
+                    black(&mut frame, out.width, out.height);
+                }
+                filler = Some(paused);
+            }
             if out.write(&frame).is_err() {
                 output = None;
                 thread::sleep(Duration::from_millis(500));
@@ -477,6 +501,28 @@ fn black(frame: &mut [u8], width: usize, height: usize) {
     let luma = width * height;
     frame[..luma].fill(BLACK_Y);
     frame[luma..].fill(BLACK_UV);
+}
+
+/// La imagen de pausa en YU12: fondo gris oscuro y el símbolo de pausa (dos
+/// barras claras) en el centro. Sin letras, para no depender de un idioma ni
+/// de una fuente.
+fn pause_image(frame: &mut [u8], width: usize, height: usize) {
+    const BACK_Y: u8 = 40;
+    const BAR_Y: u8 = 200;
+    black(frame, width, height);
+    frame[..width * height].fill(BACK_Y);
+    let bar_h = height / 4;
+    let bar_w = (height / 16).max(1);
+    let gap = bar_w;
+    let left = (width / 2).saturating_sub(gap / 2 + bar_w);
+    let top = (height - bar_h) / 2;
+    for row in top..top + bar_h {
+        let line = &mut frame[row * width..(row + 1) * width];
+        for x0 in [left, left + bar_w + gap] {
+            let x1 = (x0 + bar_w).min(width);
+            line[x0.min(width)..x1].fill(BAR_Y);
+        }
+    }
 }
 
 /// Como `fit`, pero girando la imagen `degrees` (0, 90, 180 o 270, sentido
@@ -719,6 +765,20 @@ mod tests {
         assert_eq!(take_direct(Duration::ZERO, &mut into), Some((2, 2)));
         assert_eq!(into, vec![7; 6]);
         assert_eq!(take_direct(Duration::ZERO, &mut into), None);
+    }
+
+    #[test]
+    fn pause_image_has_two_centered_bars() {
+        let (w, h) = (64, 32);
+        let mut frame = vec![0; w * h * 3 / 2];
+        pause_image(&mut frame, w, h);
+        let middle = &frame[(h / 2) * w..(h / 2 + 1) * w];
+        let lit: Vec<usize> = (0..w).filter(|&x| middle[x] == 200).collect();
+        // Dos barras de 2 píxeles separadas por 2, alrededor del centro.
+        assert_eq!(lit, vec![29, 30, 33, 34]);
+        // Arriba no hay barras y el color es neutro.
+        assert!(frame[..w].iter().all(|&y| y == 40));
+        assert!(frame[w * h..].iter().all(|&c| c == BLACK_UV));
     }
 
     #[test]

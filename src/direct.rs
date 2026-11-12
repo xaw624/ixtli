@@ -103,45 +103,36 @@ struct State {
     ended: AtomicBool,
 }
 
-pub struct Direct {
+/// La transmisión de video: el servidor en el teléfono, el túnel y ffmpeg.
+/// Se puede cerrar y volver a abrir sin tocar el micrófono (pausa automática).
+struct Stream {
     server: Child,
     decoder: Child,
     socket: TcpStream,
-    serial: String,
     port: u16,
     log: Arc<Mutex<Log>>,
     state: Arc<State>,
-    /// El scrcpy del micrófono, si se pidió.
-    audio: Option<Session>,
-    link: Link,
-    saver: bool,
-    pub with_mic: bool,
 }
 
-impl Direct {
-    pub fn start(
-        serial: &str,
-        link: Link,
-        cam: &VirtualCam,
-        options: &Options,
-        capture: &Capture,
-    ) -> Result<Direct, String> {
+impl Stream {
+    /// Con `push`, primero copia el servidor al teléfono. Al reanudar una
+    /// pausa ya está ahí (`cleanup=false` hace que no se borre al cerrar).
+    fn open(serial: &str, link: Link, options: &Options, capture: &Capture, push: bool) -> Result<Stream, String> {
         let server = server().ok_or("No encontré el servidor de scrcpy (scrcpy-server) en esta computadora.")?;
-        sys::run_for(
-            "adb",
-            &["-s", serial, "push", &server.path.to_string_lossy(), REMOTE],
-            Duration::from_secs(20),
-        )
-        .map_err(|_| "No se pudo copiar el servidor de scrcpy al teléfono.".to_string())?;
+        if push {
+            sys::run_for(
+                "adb",
+                &["-s", serial, "push", &server.path.to_string_lossy(), REMOTE],
+                Duration::from_secs(20),
+            )
+            .map_err(|_| "No se pudo copiar el servidor de scrcpy al teléfono.".to_string())?;
+        }
         let scid = new_scid();
         let socket_name = format!("localabstract:scrcpy_{scid:08x}");
         let port = sys::run_for("adb", &["-s", serial, "forward", "tcp:0", &socket_name], Duration::from_secs(5))
             .ok()
             .and_then(|reply| reply.trim().parse::<u16>().ok())
             .ok_or("No se pudo abrir el túnel hacia el teléfono (adb forward).")?;
-        let forward_cleanup = |serial: &str| {
-            let _ = sys::run_for("adb", &["-s", serial, "forward", "--remove", &format!("tcp:{port}")], Duration::from_secs(3));
-        };
 
         let log = Arc::new(Mutex::new(Log::default()));
         let mut command = Command::new("adb");
@@ -157,7 +148,7 @@ impl Direct {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
-                forward_cleanup(serial);
+                remove_forward(serial, port);
                 return Err(format!("No se pudo arrancar el servidor en el teléfono: {e}"));
             }
         };
@@ -172,7 +163,7 @@ impl Direct {
             Ok(socket) => socket,
             Err(()) => {
                 session::stop_child(&mut child);
-                forward_cleanup(serial);
+                remove_forward(serial, port);
                 thread::sleep(Duration::from_millis(150));
                 return Err(failure(&log.lock().unwrap(), link, options.saver)
                     .unwrap_or_else(|| "El servidor de scrcpy no respondió en el teléfono.".to_string()));
@@ -184,7 +175,7 @@ impl Direct {
             Err(problem) => {
                 let _ = socket.shutdown(Shutdown::Both);
                 session::stop_child(&mut child);
-                forward_cleanup(serial);
+                remove_forward(serial, port);
                 return Err(problem);
             }
         };
@@ -211,30 +202,70 @@ impl Direct {
                 state.ended.store(true, Ordering::Relaxed);
             });
         }
+        Ok(Stream { server: child, decoder, socket, port, log, state })
+    }
 
+    /// Si el video se cortó, el motivo.
+    fn finished(&mut self, link: Link, saver: bool) -> Option<String> {
+        let server_done = !matches!(self.server.try_wait(), Ok(None));
+        let decoder_done = !matches!(self.decoder.try_wait(), Ok(None));
+        if !(server_done || decoder_done || self.state.ended.load(Ordering::Relaxed)) {
+            return None;
+        }
+        // Deja que los hilos lectores alcancen las últimas líneas.
+        thread::sleep(Duration::from_millis(150));
+        let log = self.log.lock().unwrap();
+        Some(failure(&log, link, saver).unwrap_or_else(|| session::explain("WARN: Device disconnected", link, saver)))
+    }
+
+    /// Cierra la conexión (con eso el servidor termina en el teléfono y apaga
+    /// la cámara), adb, ffmpeg y el túnel.
+    fn stop(mut self, serial: &str) {
+        let _ = self.socket.shutdown(Shutdown::Both);
+        session::stop_child(&mut self.server);
+        session::stop_child(&mut self.decoder);
+        remove_forward(serial, self.port);
+    }
+}
+
+fn remove_forward(serial: &str, port: u16) {
+    let _ = sys::run_for("adb", &["-s", serial, "forward", "--remove", &format!("tcp:{port}")], Duration::from_secs(3));
+}
+
+pub struct Direct {
+    /// `None` mientras la cámara está en pausa.
+    stream: Option<Stream>,
+    serial: String,
+    /// El scrcpy del micrófono, si se pidió. Sigue durante la pausa.
+    audio: Option<Session>,
+    link: Link,
+    saver: bool,
+    pub with_mic: bool,
+}
+
+impl Direct {
+    pub fn start(
+        serial: &str,
+        link: Link,
+        cam: &VirtualCam,
+        options: &Options,
+        capture: &Capture,
+    ) -> Result<Direct, String> {
+        let stream = Stream::open(serial, link, options, capture, true)?;
         let audio = if options.mic {
             match Session::audio_only(serial, link, cam) {
                 Ok(audio) => Some(audio),
                 Err(problem) => {
-                    let _ = socket.shutdown(Shutdown::Both);
-                    session::stop_child(&mut child);
-                    session::stop_child(&mut decoder);
-                    forward_cleanup(serial);
+                    stream.stop(serial);
                     return Err(problem);
                 }
             }
         } else {
             None
         };
-
         Ok(Direct {
-            server: child,
-            decoder,
-            socket,
+            stream: Some(stream),
             serial: serial.to_string(),
-            port,
-            log,
-            state,
             audio,
             link,
             saver: options.saver,
@@ -244,19 +275,32 @@ impl Direct {
 
     /// Ya llegó video del teléfono al puente.
     pub fn is_live(&self) -> bool {
-        self.state.live.load(Ordering::Relaxed)
+        self.stream.as_ref().is_some_and(|stream| stream.state.live.load(Ordering::Relaxed))
+    }
+
+    /// La cámara del teléfono está apagada por la pausa automática.
+    pub fn is_paused(&self) -> bool {
+        self.stream.is_none()
+    }
+
+    /// Apaga la cámara del teléfono. El micrófono sigue.
+    pub fn pause(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            stream.stop(&self.serial);
+        }
+    }
+
+    /// Vuelve a prender la cámara del teléfono después de una pausa.
+    pub fn resume(&mut self, options: &Options, capture: &Capture) -> Result<(), String> {
+        if self.stream.is_none() {
+            self.stream = Some(Stream::open(&self.serial, self.link, options, capture, false)?);
+        }
+        Ok(())
     }
 
     /// Si el video (o el micrófono) se cortó, el motivo.
     pub fn finished(&mut self) -> Option<Result<(), String>> {
-        let server_done = !matches!(self.server.try_wait(), Ok(None));
-        let decoder_done = !matches!(self.decoder.try_wait(), Ok(None));
-        if server_done || decoder_done || self.state.ended.load(Ordering::Relaxed) {
-            // Deja que los hilos lectores alcancen las últimas líneas.
-            thread::sleep(Duration::from_millis(150));
-            let log = self.log.lock().unwrap();
-            let problem = failure(&log, self.link, self.saver)
-                .unwrap_or_else(|| session::explain("WARN: Device disconnected", self.link, self.saver));
+        if let Some(problem) = self.stream.as_mut().and_then(|stream| stream.finished(self.link, self.saver)) {
             return Some(Err(problem));
         }
         if let Some(audio) = &mut self.audio {
@@ -267,17 +311,9 @@ impl Direct {
         None
     }
 
-    /// Cierra todo: la conexión (con eso el servidor termina en el teléfono),
-    /// adb, ffmpeg, el túnel y el micrófono.
+    /// Cierra todo: el video y el micrófono.
     pub fn stop(mut self) {
-        let _ = self.socket.shutdown(Shutdown::Both);
-        session::stop_child(&mut self.server);
-        session::stop_child(&mut self.decoder);
-        let _ = sys::run_for(
-            "adb",
-            &["-s", &self.serial, "forward", "--remove", &format!("tcp:{}", self.port)],
-            Duration::from_secs(3),
-        );
+        self.pause();
         if let Some(audio) = self.audio {
             audio.stop();
         }

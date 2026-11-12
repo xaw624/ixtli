@@ -1,8 +1,8 @@
 # Plan de Ixtli
 
-Notas para retomar el proyecto en otra sesión. Actualizado el 11 de noviembre de 2026.
+Notas para retomar el proyecto en otra sesión. Actualizado el 12 de noviembre de 2026.
 
-## Para retomar (estado al 11 de noviembre de 2026)
+## Para retomar (estado al 12 de noviembre de 2026)
 
 Dónde quedó el trabajo:
 
@@ -15,8 +15,8 @@ Dónde quedó el trabajo:
   prueba con el teléfono» abajo). De ahí salieron tres arreglos: búsqueda propia en
   la red (mDNS), tamaños del modo ahorro múltiplos de 8 y pantalla apagada siempre.
   Los tres ya están probados: el QR el 10 de noviembre por la red de casa.
-- En GitHub está todo hasta `713041c` (11 de noviembre). Los sondeos y la vista
-  previa ligera van en el commit siguiente. Todavía no hay versión 0.3 publicada.
+- En GitHub está todo hasta `3c1cb1f` (motor propio). La pausa
+  automática va en el commit siguiente. Todavía no hay versión 0.3 publicada.
 - **Tamaño fijo hecho** (adelanto del paso 3 de la fase 3): ver «Meet perdía la
   cámara» abajo. El 10 de noviembre el usuario lo probó en una llamada de Meet y
   funcionó bien.
@@ -26,7 +26,8 @@ Lo siguiente, en orden:
 1. **Seguir la fase 3 (motor de video propio).** El 11 de noviembre el usuario
    decidió seguir programando y dejar para después las mediciones y las pruebas con
    el teléfono. Ya funciona con simuladores (`--motor=propio`, ver «Avance de la
-   fase 3»); faltan la pausa automática, el ángulo libre y probarlo con el teléfono.
+   fase 3»), con pausa automática; faltan el ángulo libre y probarlo con el
+   teléfono.
 2. **Más adelante, con el teléfono:** llenar la tabla base de `docs/mediciones.md`.
    Lo hace el usuario; por teléfono son cuatro corridas de `ixtli medir 15
    --pantalla-prendida` (720p y 1080p, por WiFi y por cable), con la cámara «Ixtli»
@@ -411,8 +412,8 @@ mediciones son iguales o mejores que las de la fase 2.
 
 ### Avance de la fase 3 (11 de noviembre de 2026)
 
-Hechos los pasos 1, 2, 3, 4 (sin el ángulo libre), 6 y 7, probados solo con
-simuladores. **Falta probarlo con un teléfono real.** Por ahora el motor propio
+Hechos los pasos 1 a 7 (el 4 sin el ángulo libre), probados solo con
+simuladores. La pausa automática (paso 5) es del 12 de noviembre. **Falta probarlo con un teléfono real.** Por ahora el motor propio
 se pide con `--motor=propio` (o `motor=propio` en `opciones.conf`); el de siempre
 sigue siendo scrcpy hasta probarlo.
 
@@ -437,8 +438,22 @@ sigue siendo scrcpy hasta probarlo.
 - **Micrófono**: un scrcpy sin video (`Session::audio_only`).
 - La red caída se nota porque deja de llegar video: la conexión se cierra y Ixtli
   avisa enseguida (0.5 a 1.5 s con los simuladores).
-- **Pendiente:** la pausa automática (paso 5), el ángulo libre y empaquetar el
-  servidor.
+- **Pausa automática** (12 de noviembre): con el motor propio, si nadie ve la
+  cámara durante 10 segundos (ningún programa la tiene abierta y no se ve la vista
+  previa), Ixtli cierra la conexión con el servidor: el teléfono apaga la cámara y
+  «Ixtli» muestra una imagen fija de pausa (gris oscuro con dos barras, sin letras).
+  Al abrirla alguien, vuelve a arrancar el servidor sin copiarlo otra vez y lee el
+  giro antes de que lleguen los cuadros. El micrófono y la pantalla apagada siguen
+  durante la pausa. La ventana dice «En pausa» y la terminal avisa al entrar y al
+  salir. Se apaga con `--sin-pausa` o `pausa=no` en `opciones.conf`. Con la ventana
+  abierta y la vista previa visible no se pausa, porque cuenta como alguien viendo.
+- **Quién usa la cámara, sin revisar a cada rato:** revisar todos los procesos
+  cuesta decenas de milisegundos (unos 6 600 archivos abiertos en esta computadora).
+  Ahora el sistema avisa (inotify, `sys::OpenWatch`) cuando alguien abre o cierra
+  «Ixtli» y solo entonces se revisa, más una revisión de respaldo cada 10 s (antes,
+  cada 2 s). De paso, un navegador que solo abre y cierra la cámara para listarla no
+  despierta al teléfono.
+- **Pendiente:** el ángulo libre y empaquetar el servidor.
 
 Cómo se probó: un `adb` simulado que, al arrancar el «servidor», abre el puerto del
 túnel, manda el byte inicial y luego H.264 de prueba (`ffmpeg -f lavfi -i testsrc2
@@ -459,10 +474,21 @@ otra corrida el decodificador solo marcó 8 % en 720p. Comparar siempre en la mi
 tanda. El pipe de ffmpeg se agranda a 1 MB (`F_SETPIPE_SZ`) para leer cada cuadro
 en menos pasos; con ese ruido no se pudo medir si ayuda.
 
+Pausa automática con los simuladores (12 de noviembre): se pausa unos 10 s después
+de quedar en vivo y quita el túnel; al abrir la cámara con ffmpeg el servidor
+vuelve a arrancar 0.7 s después y la imagen real llega a los 3 a 3.5 s (el
+simulador tarda en arrancar su codificador; con el teléfono falta medirlo). En
+pausa, Ixtli gasta 0.8 a 0.9 % de un núcleo; revisando los procesos cada 700 ms
+gastaba 4.8 %, y por eso se cambió a inotify. Con micrófono, este sigue durante la
+pausa y al apagar no quedan módulos de audio. Con `--sin-pausa` y con el motor
+scrcpy no se pausa. La pantalla «En pausa» de la ventana no se ha visto todavía.
+
 Qué hay que ver con el teléfono real: que el servidor acepte los parámetros
 (`raw_stream`, `send_dummy_byte` después, `cleanup=false`), que la imagen sin
 `capture_orientation` salga como la da el sensor (así lo supone el giro), el
-retraso del decodificador y el gasto contra el motor de scrcpy.
+retraso del decodificador y el gasto contra el motor de scrcpy. De la pausa: cuánto
+tarda en volver la imagen, que el teléfono de verdad apague la cámara (se apaga el
+indicador verde de Android) y que Meet u OBS no pierdan la cámara durante la pausa.
 
 Riesgos: el protocolo del servidor cambia entre versiones de scrcpy (por eso se fija
 y se empaqueta una); el retraso del decodificador externo.
